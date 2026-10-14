@@ -20,6 +20,16 @@
 - [x] CLI 输出容忍 broken pipe
 - [x] 表格输出改用 `comfy-table`（CJK 宽度对齐 + 路径左截断），一条记录一行
 - [x] `--format table|json|toon`（TOON 省 48% token，人也能读；`--json` 保留为简写）
+- [x] `auth` 子命令查登录态（`--show-secrets` 打全量凭据，默认脱敏）
+  - [x] codebuddy：`~/.local/share/CodeBuddyExtension/Data/Public/auth/*.info`
+        （账号 + access/refresh token；当前文件 = 文件名无时间戳段）
+  - [x] opencode：`~/.local/share/opencode/auth.json`（provider → api key / oauth）
+  - [ ] **JWT claims 解码**（codebuddy）：accessToken / refreshToken 的 payload
+        是明文 base64，解出来比本地 `account` 块更权威 —— 可校验 token 里的
+        `sub` 与 `account.uid` 是否一致、看 `enterprise_id` / `email_verified` /
+        `realm_access.roles`。当前 `auth` 输出**不解 JWT**，只原样带 `auth.*`
+        字段 + 由 `expiresAt` 算出 days_left。要做时加 `token_claims` 字段，
+        注意同样遵守脱敏约定（claims 本身不含密钥，但含身份信息）。
 
 ## v2 —— 写操作（fork / edit）
 

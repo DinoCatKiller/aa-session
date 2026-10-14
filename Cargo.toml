@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "packages/core",
     "packages/sources/codebuddy",
+    "packages/sources/zed",
     "packages/sources/opencode",
     "packages/apps/cli",
 ]
@@ -16,6 +17,7 @@ license = "Apache-2.0"
 aa_session_core = { path = "packages/core" }
 aa_session_source_opencode = { path = "packages/sources/opencode" }
 aa_session_source_codebuddy = { path = "packages/sources/codebuddy" }
+aa_session_source_zed = { path = "packages/sources/zed" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -25,6 +27,7 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zstd = "0.13"
 
 [profile.release]
 opt-level = 3

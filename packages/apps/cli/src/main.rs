@@ -20,6 +20,7 @@ use aa_session_core::{
 use aa_session_source_opencode::OpencodeSource;
 use aa_session_source_opencode::{backup, rename};
 use aa_session_source_codebuddy::CodebuddySource;
+use aa_session_source_zed::ZedSource;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
@@ -248,6 +249,8 @@ enum AppArg {
     Opencode,
     /// codebuddy（`~/.codebuddy/projects/<编码路径>/*.jsonl`）。
     Codebuddy,
+    /// zed（`~/.local/share/zed/threads/threads.db`）。
+    Zed,
 }
 
 impl AppArg {
@@ -263,6 +266,7 @@ impl AppArg {
                 .join(aa_session_source_opencode::DEFAULT_DATA_DIR)
                 .join(aa_session_source_opencode::DB_FILE_NAME),
             AppArg::Codebuddy => home.join(aa_session_source_codebuddy::DEFAULT_DATA_DIR),
+            AppArg::Zed => home.join(aa_session_source_zed::DEFAULT_DATA_DIR),
         }
     }
 
@@ -297,6 +301,20 @@ impl AppArg {
                     },
                 )?))
             }
+            AppArg::Zed => {
+                let path = db
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.default_data_path());
+                Ok(Box::new(ZedSource::open_dir(&path).with_context(
+                    || {
+                        format!(
+                            "无法打开 {} 的数据库（路径 {}）",
+                            self.name(),
+                            path.display()
+                        )
+                    },
+                )?))
+            }
         }
     }
 
@@ -305,6 +323,7 @@ impl AppArg {
         match self {
             AppArg::Opencode => "opencode",
             AppArg::Codebuddy => "codebuddy",
+            AppArg::Zed => "zed",
         }
     }
 }
