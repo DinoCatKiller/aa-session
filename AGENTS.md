@@ -335,3 +335,6 @@ agent 自行决定，准则如下：
 
 完整的通用 Rust 规则索引在 [`.agents/rust-skill-index.md`](.agents/rust-skill-index.md)
 （cargo-skill 生成，与本项目无关，仅作参考）。
+
+zed 原版 agent 的工具调用损坏案例（空 id/name、参数丢失）与导出→改→导入的
+恢复流程记录在 [`.agents/zed-tool-call-corruption.md`](.agents/zed-tool-call-corruption.md)。
