@@ -11,11 +11,11 @@ mod table;
 use format::Format;
 use output::{human_bytes, out};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use aa_session_core::{
-    Archived, EmptySessions, Error, ProjectSelector, SessionFilter, SessionSource, SortKey,
-    Subagents,
+    Archived, EmptySessions, Error, ProjectSelector, SessionFilter, SessionImporter, SessionSource,
+    SortKey, Subagents,
 };
 use aa_session_source_opencode::OpencodeSource;
 use aa_session_source_opencode::{backup, rename};
@@ -238,6 +238,19 @@ enum Command {
         #[arg(long, short = 's')]
         show_secrets: bool,
     },
+
+    /// 覆盖导入一个本工具 `export` 产出的文件（同 `session_id` 整行替换）。
+    ///
+    /// 默认**只预检**（打印将覆盖的会话、目标路径，不写库）；加 `--apply`
+    /// 才真正写库，且写前自动备份整个数据库。目前仅 zed 支持。
+    Import {
+        /// 本工具 `export` 产出的 JSON 文件。
+        file: PathBuf,
+
+        /// 真正写库（默认只预检）。写前自动备份。
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 /// 要操作的 agent 应用。
@@ -302,15 +315,22 @@ impl AppArg {
                 )?))
             }
             AppArg::Zed => {
+                // `--db` 可给 zed 数据目录（`~/.local/share/zed`，内部拼
+                // `threads/threads.db`）或直接给 .db 文件路径。
                 let path = db
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| self.default_data_path());
-                Ok(Box::new(ZedSource::open_dir(&path).with_context(
+                let db_file = if path.is_file() {
+                    path.clone()
+                } else {
+                    path.join(aa_session_source_zed::DB_FILE_NAME)
+                };
+                Ok(Box::new(ZedSource::open(&db_file).with_context(
                     || {
                         format!(
                             "无法打开 {} 的数据库（路径 {}）",
                             self.name(),
-                            path.display()
+                            db_file.display()
                         )
                     },
                 )?))
@@ -324,6 +344,31 @@ impl AppArg {
             AppArg::Opencode => "opencode",
             AppArg::Codebuddy => "codebuddy",
             AppArg::Zed => "zed",
+        }
+    }
+
+    /// 打开该 app 的**导入器**（写路径）。
+    ///
+    /// 目前只有 zed 实现了覆盖导入（`SessionImporter`）。其他 app 返回
+    /// `None`，CLI 层报「该 app 暂不支持导入」。写路径和读路径分开构造，
+    /// 保证「导入命令一定用写连接」在类型层面成立。
+    fn open_importer(&self, db: Option<&Path>) -> Option<Box<dyn SessionImporter>> {
+        match self {
+            AppArg::Zed => {
+                // `--db` 可给 zed 数据目录（`~/.local/share/zed`，内部拼
+                // `threads/threads.db`）或直接给 .db 文件路径。
+                let path = db
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.default_data_path());
+                let db_file = if path.is_file() {
+                    path
+                } else {
+                    path.join(aa_session_source_zed::DB_FILE_NAME)
+                };
+                let src = ZedSource::open_writable(&db_file).ok()?;
+                Some(Box::new(src))
+            }
+            _ => None,
         }
     }
 }
@@ -595,6 +640,23 @@ fn main() -> Result<()> {
         } => {
             let info = source.auth(show_secrets)?;
             output::print_auth(&info, format, show_secrets)?;
+        }
+
+        Command::Import { file, apply } => {
+            let Some(mut importer) = app.open_importer(cli.db.as_deref()) else {
+                anyhow::bail!(
+                    "app `{}` 暂不支持导入（目前只有 zed 实现了覆盖导入）。",
+                    app.name()
+                );
+            };
+            let report = importer.import(&file, apply)?;
+            out(format_args!("{}", report.summary));
+            if report.backup.is_some() {
+                out(format_args!(
+                    "备份：{}",
+                    report.backup.as_deref().unwrap_or("")
+                ));
+            }
         }
     }
 

@@ -27,10 +27,12 @@
 use std::path::{Path, PathBuf};
 
 use aa_session_core::{
-    DirectoryMeta, Error, ProjectMeta, ProjectSelector, Result, SessionFilter, SessionMeta,
-    SessionSource, SortKey,
+    DirectoryMeta, Error, ImportReport, ProjectMeta, ProjectSelector, Result, SessionFilter,
+    SessionImporter, SessionMeta, SessionSource, SortKey,
 };
 use rusqlite::{Connection, OpenFlags, Row};
+
+pub mod import;
 
 /// zed 的 threads.db 相对 `$HOME` 的路径。
 pub const DEFAULT_DATA_DIR: &str = ".local/share/zed";
@@ -59,6 +61,18 @@ impl ZedSource {
 
     /// 以只读模式打开指定数据库文件。
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_impl(path, false)
+    }
+
+    /// 以**读写**模式打开指定数据库文件。
+    ///
+    /// 只给导入（写库）路径用；其余一律走 [`Self::open`]。
+    /// 两个构造入口分开，「不小心写了库」在类型层面就不可能。
+    pub fn open_writable(path: &Path) -> Result<Self> {
+        Self::open_impl(path, true)
+    }
+
+    fn open_impl(path: &Path, writable: bool) -> Result<Self> {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if !path.exists() {
             return Err(Error::Open {
@@ -67,12 +81,18 @@ impl ZedSource {
             });
         }
 
-        let uri = format!("file:{}?mode=ro", path.display());
-        let conn = Connection::open_with_flags(
-            &uri,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-        )
-        .map_err(|e| Error::Open {
+        let (uri, flags) = if writable {
+            (
+                format!("file:{}", path.display()),
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
+            )
+        } else {
+            (
+                format!("file:{}?mode=ro", path.display()),
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+            )
+        };
+        let conn = Connection::open_with_flags(&uri, flags).map_err(|e| Error::Open {
             path: path.display().to_string(),
             cause: e.to_string(),
         })?;
@@ -83,13 +103,79 @@ impl ZedSource {
         Ok(Self { conn, path })
     }
 
+    /// 可写连接。**只有导入路径能用**（与 opencode 的 `conn_mut` 同一契约）。
+    pub fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
+    
+    /// 覆盖导入一个 export 文件（同 `id` 整行替换）。
+    ///
+    /// 写库前的安全契约由调用方（CLI `import` 子命令）负责：
+    /// 预检 + `--apply` + 写前备份。这里只做「把 `raw_data` 写回 `threads` 表」。
+    ///
+    /// `columns` 缺列（老导出文件没有 `folder_paths_order`）时该列写 NULL，
+    /// zed 反序列化时 `order: Vec::new()` 等价于不排序，行为正确。
+    pub(crate) fn import_overwrite(
+        &mut self,
+        thread_id: &str,
+        columns: &serde_json::Value,
+        thread_json: &serde_json::Value,
+    ) -> Result<usize> {
+        let tj = thread_json;
+        let cols = columns;
+        let get = |k: &str| {
+            cols.get(k)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        let id: String = cols.get("id").and_then(|v| v.as_str()).unwrap_or(thread_id).to_string();
+        let summary = get("summary").unwrap_or_else(|| tj.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string());
+        let updated_at = get("updated_at").unwrap_or_else(|| tj.get("updated_at").and_then(|v| v.as_str()).unwrap_or_default().to_string());
+        let created_at = get("created_at").unwrap_or_else(|| updated_at.clone());
+        let parent_id = cols.get("parent_id").and_then(|v| v.as_str()).map(str::to_string);
+        let folder_paths = cols.get("folder_paths").and_then(|v| v.as_str()).map(str::to_string);
+        let folder_paths_order = cols.get("folder_paths_order").and_then(|v| v.as_str()).map(str::to_string);
+
+        let data = compress_thread_json(tj)?;
+        let conn = self.conn_mut();
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO threads (id, summary, updated_at, data_type, data, parent_id, folder_paths, folder_paths_order, created_at)
+                 VALUES (?1, ?2, ?3, 'zstd', ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                   summary = excluded.summary,
+                   updated_at = excluded.updated_at,
+                   data_type = excluded.data_type,
+                   data = excluded.data,
+                   parent_id = excluded.parent_id,
+                   folder_paths = excluded.folder_paths,
+                   folder_paths_order = excluded.folder_paths_order,
+                   created_at = excluded.created_at",
+            )
+            .map_err(query_err)?;
+        let n = stmt
+            .execute(rusqlite::params![
+                id,
+                summary,
+                updated_at,
+                data,
+                parent_id,
+                folder_paths,
+                folder_paths_order,
+                created_at,
+            ])
+            .map_err(query_err)?;
+        Ok(n)
+    }
+
     /// 数据库文件路径。
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// 执行查询并把行收集成 `Vec`。`binds` 是 `?` 占位符的值（可为空）。
-    fn collect_rows<T>(
+    pub(crate) fn collect_rows<T>(
         &self,
         sql: &str,
         binds: &[&dyn rusqlite::ToSql],
@@ -103,6 +189,19 @@ impl ZedSource {
             out.push(map_row(row)?);
         }
         Ok(out)
+    }
+
+    /// 某线程 id 是否已存在于库中（导入前判「覆盖」还是「新增」）。
+    pub(crate) fn thread_exists(&self, thread_id: &str) -> Result<bool> {
+        let n: i64 = self
+            .collect_rows(
+                "SELECT count(*) FROM threads WHERE id = ?1",
+                &[&thread_id],
+                |row| row.get::<_, i64>(0).map_err(query_err),
+            )?
+            .pop()
+            .unwrap_or(0);
+        Ok(n > 0)
     }
 }
 
@@ -124,8 +223,25 @@ fn decompress_zstd(blob: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// 压缩 DbThread JSON（与 zed 的 `zstd::encode_all(level 3)` 一致）。
+fn compress_thread_json(json: &serde_json::Value) -> Result<Vec<u8>> {
+    let json_bytes =
+        serde_json::to_vec(json).map_err(|cause| Error::Query(cause.to_string()))?;
+    let mut out = Vec::new();
+    {
+        let mut encoder = zstd::stream::write::Encoder::new(&mut out, 3)
+            .map_err(|cause| Error::Query(format!("zstd compress: {cause}")))?;
+        use std::io::Write;
+        encoder
+            .write_all(&json_bytes)
+            .map_err(|cause| Error::Query(cause.to_string()))?;
+        encoder.finish().map_err(|cause| Error::Query(format!("zstd finish: {cause}")))?;
+    }
+    Ok(out)
+}
+
 /// 把 `rusqlite` 错误转成领域错误。
-fn query_err(e: rusqlite::Error) -> Error {
+pub(crate) fn query_err(e: rusqlite::Error) -> Error {
     Error::Query(e.to_string())
 }
 
@@ -467,7 +583,7 @@ impl SessionSource for ZedSource {
     /// `thread_json` 的压缩形式），`thread_json` 是解压后的完整 DbThread。
     fn dump(&self, session_id: &str) -> Result<serde_json::Value> {
         let row = self.collect_rows(
-            "SELECT id, summary, updated_at, data, parent_id, folder_paths, created_at, data_type \
+            "SELECT id, summary, updated_at, data, parent_id, folder_paths, folder_paths_order, created_at, data_type \
               FROM threads WHERE id = ?1",
             &[&session_id],
             |r| {
@@ -478,13 +594,14 @@ impl SessionSource for ZedSource {
                     r.get::<_, Vec<u8>>(3).map_err(query_err)?,
                     r.get::<_, Option<String>>(4).map_err(query_err)?,
                     r.get::<_, Option<String>>(5).map_err(query_err)?,
-                    r.get::<_, String>(6).map_err(query_err)?,
+                    r.get::<_, Option<String>>(6).map_err(query_err)?,
                     r.get::<_, String>(7).map_err(query_err)?,
+                    r.get::<_, String>(8).map_err(query_err)?,
                 ))
             },
         )?;
 
-        let Some((id, summary, updated_at, data, parent_id, folder_paths, created_at, data_type)) =
+        let Some((id, summary, updated_at, data, parent_id, folder_paths, folder_paths_order, created_at, data_type)) =
             row.into_iter().next()
         else {
             return Err(Error::NotFound(format!(
@@ -509,6 +626,7 @@ impl SessionSource for ZedSource {
                 "created_at": created_at,
                 "parent_id": parent_id,
                 "folder_paths": folder_paths,
+                "folder_paths_order": folder_paths_order,
                 "data_type": data_type,
             },
             "thread_json": thread_json,
@@ -525,6 +643,16 @@ impl SessionSource for ZedSource {
             "status": "not_logged_in",
             "note": "zed 的 LLM provider 凭据不在已知位置（threads.db / settings.json / db.sqlite 均无 auth 表，copilot 目录无凭据）。深挖 zed 的 auth 存储尚未定位，见 ROADMAP。",
         }))
+    }
+}
+
+impl SessionImporter for ZedSource {
+    fn importer_name(&self) -> &'static str {
+        "zed (threads.db)"
+    }
+
+    fn import(&mut self, export_path: &std::path::Path, apply: bool) -> Result<ImportReport> {
+        crate::import::run(self, export_path, apply)
     }
 }
 

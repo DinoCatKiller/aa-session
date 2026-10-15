@@ -250,6 +250,49 @@ pub trait SessionSource {
     fn auth(&self, show_secrets: bool) -> Result<serde_json::Value>;
 }
 
+/// 覆盖式导入（同 `session_id` 整条替换）。
+///
+/// 与 [`SessionSource`] 相反，这是**写路径**：默认只预检，真正写库必须
+/// 显式 `apply`，且写前由调用方做备份。各 app 按自己的存储结构实现，
+/// 不做跨 app 的统一抽象。
+///
+/// # 语义
+///
+/// - **覆盖**：`id` 已存在则整行/整文件替换，旧数据被备份后才丢
+/// - **新增**：`id` 不存在则插入
+///
+/// 两个动作在同一方法里，由 `id` 是否存在自然分流。
+pub trait SessionImporter {
+    /// 该 app 的覆盖导入实现名（展示用）。
+    fn importer_name(&self) -> &'static str;
+
+    /// 执行一次「读 export 文件 → 写回」。`apply == false` 时只返回
+    /// 预检报告不写盘，`apply == true` 时写库。
+    ///
+    /// `export_path` 是本工具 `export` 产出的文件。方法内负责校验
+    /// `app` 字段与自身一致（防跨 app 误导入），失败报
+    /// [`Error::InvalidArgument`]。
+    fn import(&mut self, export_path: &std::path::Path, apply: bool)
+        -> Result<ImportReport>;
+}
+
+/// 一次导入尝试的报告（写或预检都产出一个）。
+#[derive(Debug, Clone)]
+pub struct ImportReport {
+    /// 被操作的会话 id。
+    pub session_id: String,
+    /// 目标路径（库文件 / JSONL 文件）。
+    pub target: String,
+    /// `id` 是否已存在（`true` = 覆盖，`false` = 新增）。
+    pub is_overwrite: bool,
+    /// 是否实际写入了（预检为 `false`）。
+    pub applied: bool,
+    /// 写入前的备份文件路径（`applied == true` 时必有）。
+    pub backup: Option<String>,
+    /// 人类可读摘要（预检时打印给用户）。
+    pub summary: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

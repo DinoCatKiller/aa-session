@@ -31,6 +31,12 @@
         字段 + 由 `expiresAt` 算出 days_left。要做时加 `token_claims` 字段，
         注意同样遵守脱敏约定（claims 本身不含密钥，但含身份信息）。
 
+- [x] `import` —— 覆盖导入本工具 `export` 产物（同 `session_id` 整行替换）
+  - [x] 默认预检（打印「将覆盖/将新增」+ 目标路径，不写库）
+  - [x] `--apply` 执行 + 写前 `VACUUM INTO` 备份（文件名带时间戳 + 单调后缀防撞名）
+  - [x] 跨 app 拒绝（opencode 文件 → zed 报错）
+  - [ ] zed 外的 source 实现 `SessionImporter`（opencode / codebuddy 目前 CLI 报「暂不支持」）
+
 ## v2 —— 写操作（fork / edit）
 
 > 前置约束：**fork-first**，编辑永远作用在副本上，原库只读。
