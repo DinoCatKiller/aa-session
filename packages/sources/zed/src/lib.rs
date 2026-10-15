@@ -235,6 +235,20 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// 转义 LIKE 的通配符，让用户输入被当作字面量。
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+///
+/// 精确语义 = 该路径是会话涉及的目录之一（任意一段等于它）。
+/// 在 Rust 里做，避免 SQLite 单引号字面量里 `\n` 的坑。
+fn matches_project_exact(folder_paths_raw: &Option<String>, path: &str) -> bool {
+    split_folder_paths(folder_paths_raw.as_deref()).iter().any(|seg| seg == path)
+}
+
 impl SessionSource for ZedSource {
     fn app(&self) -> &'static str {
         APP_NAME
@@ -394,6 +408,13 @@ impl SessionSource for ZedSource {
                 aa_session_core::EmptySessions::Exclude if !has_messages => continue,
                 aa_session_core::EmptySessions::Only if has_messages => continue,
                 _ => {}
+            }
+
+            // 精确项目过滤（在 Rust 里做，避开 SQLite 换行字面量坑）。
+            if let ProjectSelector::Exact { path } = &filter.project
+                && !matches_project_exact(&folder_paths, path)
+            {
+                continue;
             }
 
             out.push(thread_from_row(
@@ -618,39 +639,26 @@ fn build_where(filter: &SessionFilter) -> (String, Vec<Box<dyn rusqlite::ToSql>>
     match &filter.project {
         ProjectSelector::All => {}
         ProjectSelector::Exact { path } => {
-            // `folder_paths` 是换行分隔，主目录 = 第一段。
-            // 在两侧补 `\n` 再匹配 `path\n`，避免把 `repo/AAgent` 当成 `repo/AAgent2` 的前缀。
-            // 两侧补 \n 让 LIKE 匹配完整的换行分隔字段：
-            // `\n<path>\n` 命中首/中/末字段，避免 `repo/AAgent` 误匹配 `repo/AAgent2`。
-            sql.push_str(
-                " AND ('\n' || COALESCE(folder_paths, '') || '\n') LIKE ? ESCAPE '\\'",
-            );
-            binds.push(Box::new(format!("\n{path}\n")));
+            // 精确匹配（「该路径是会话涉及的目录之一」）在 Rust 行循环里做，
+            // 不进 SQL：`folder_paths` 换行分隔 + SQLite 单引号字面量里的
+            // `\n` 是反斜杠 + n（不是换行），拼 SQL 极易写错（实测踩过）。
+            // 见 `sessions()` 里的 `matches_project_exact` 检查。
+            let _ = path;
         }
         ProjectSelector::Like { paths, .. } => {
+            // 模糊匹配走 SQL 子串 LIKE（不含换行，没有字面量坑）。
             if paths.is_empty() {
-                // 模糊匹配 0 个路径 = 无结果，直接 WHERE 1=0。
                 sql.push_str(" AND 1 = 0");
+            } else if paths.len() == 1 {
+                sql.push_str(" AND folder_paths LIKE ? ESCAPE '\\'");
+                binds.push(Box::new(format!("%{}%", escape_like(&paths[0]))));
             } else {
-                // 每个 path 一条 `folder_paths` 子串匹配（换行边界），OR 起来。
-                // `folder_paths` 换行分隔，一个线程可跨多个目录；
-                // 任一目录命中就显示（与 opencode 的 InSet 语义对齐），用 OR。
-                if paths.len() > 1 {
-                    sql.push_str(" AND ");
-                    sql.push('(');
+                sql.push_str(" AND (");
+                for p in paths {
+                    sql.push_str("folder_paths LIKE ? ESCAPE '\\'");
+                    binds.push(Box::new(format!("%{}%", escape_like(p))));
                 }
-                for (i, p) in paths.iter().enumerate() {
-                    if i > 0 {
-                        sql.push_str(" OR ");
-                    }
-                    sql.push_str(
-                        "('\n' || COALESCE(folder_paths, '') || '\n') LIKE ? ESCAPE '\\'",
-                    );
-                    binds.push(Box::new(format!("\n%{p}\n")));
-                }
-                if paths.len() > 1 {
-                    sql.push(')');
-                }
+                sql.push(')');
             }
         }
     }
