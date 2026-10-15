@@ -26,9 +26,12 @@
 
 - 现象：provider 流式返回的 `tool_calls` delta 从不带可用 `id` / `function.name`
   （每片 `index: -1`、无 id、无 name，只有 `arguments`）。
-- zed drain 出 `ToolUse { id: "", name: "" }` → agent 按空名查找失败 →
-  `"No tool named  exists"` 落库 → 下一轮把空 id/name/tool_call_id 发给 provider → 400。
-- 重试只是重发同一份 messages，永久卡死。
+- zed drain 出 `ToolUse { id: "", name: "" }` 并持久化到会话历史。
+- **失败的直接原因**：下一轮请求回放这段 assistant 消息时，`tool_calls[].id`
+  与配对的 `tool` 消息的 `tool_call_id` 都是空串 → provider 直接 400。
+  与工具能否查到无关：`"No tool named  exists"` 只是空名查找失败时顺带落库的
+  一条错误 tool-result 文本，**不是** 400 的原因。
+- 不是重试循环：每次请求都是同一份损坏 messages，一次性永久卡住（只能改历史恢复）。
 - 证据：issue #65655 里含完整 payload + provider 400 原文。
 
 ### 案例 B —— 仅 id 为空（name 有效）
