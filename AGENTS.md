@@ -29,35 +29,45 @@ aa-session --app opencode sessions   [--project ABS_PATH | --project-like SUB]
                                     [--archived exclude|only|include]
                                     [--sort updated|created|title|tokens] [--limit N]
                                     [--format table|json|toon]
-aa-session --app opencode export-many --out-dir DIR
-                                    [过滤选项同 sessions] [--sort ...] [--limit N]
-                                    [--force] [--dry-run]
 aa-session --app opencode show   <SESSION_ID>
-aa-session --app opencode export <SESSION_ID> [-o PATH] [--force]
+aa-session --app opencode export [SESSION_ID] [-o PATH]
+                                    [--force] [--dry-run] [--all]
+                                    [过滤选项同 sessions] [--sort ...] [--limit N]
 ```
 
 - 表格里**不显示来源列**：`--app` 参数已经说明了是哪个 app。
 - `--format` 默认 `table`；`--json` 是 `--format json` 的简写（保留旧用法）。
 
-### 批量导出：`export-many`（一会话一文件）
+### `export`：一条命令，单个或批量
 
-核心场景「导出某个目录的会话，然后在编辑器里搜」本来就需要**一批**文件：
-单个文件搜不出跨会话的关联，合并成一个大 JSON 又会让每次命中都落在
-几十 MB 的巨型文件里。
+「导一个」和「导一批」是同一种操作的两种规模，所以是**同一个子命令**，
+区别只在于给不给 `SESSION_ID`：
 
 ```bash
-aa-session --app opencode export-many --directory LocalDub -o exports/LocalDub
-aa-session --app opencode export-many --project /home/aa/repos/ai_ls/AAgent -o exports/AAgent
+# 单个 → -o 是文件
+aa-session --app opencode export ses_xxx -o chat.json
+
+# 批量 → -o 是目录（不存在则创建）
+aa-session --app opencode export --directory LocalDub -o exports/LocalDub/opencode
+aa-session --app opencode export --project /home/aa/repos/ai_ls/AAgent -o exports/AAgent/opencode
 ```
+
+单会话模式下给筛选参数会**直接报错**（`--title` 之类在单会话里没有意义，
+静默忽略会让人以为筛过）。
+
+批量模式：
 
 - **筛选条件与 `sessions` 完全一致**（`--project` / `--project-like` /
   `--directory` / `--agent` / `--title` / `--since` + 三个 include 模式），
   两者共用 `query_sessions()`，不会一边修了边界、另一边忘了。
+- **必须至少给一个筛选条件**，或者显式 `--all`；`--all` 与筛选条件互斥。
+  这条护栏挡的是「一条手滑命令把整个库（891 个会话、几十 GB）写进当前目录」。
 - 默认仍是**顶层 + 未归档 + 非空壳**；子 agent 的探查会话要显式
   `--subagents include` 才会导出。
-- `--limit` 默认 **0 = 不限制**（与 `sessions` 的 `--limit 0` 相反，后者是
-  「一条都不要」）。实现用 `core::NO_LIMIT`：`usize::MAX` 转成 `i64` 是
-  `-1`，SQLite 的负数 `LIMIT` 正是不限，`Vec::truncate` 也是无操作。
+- `--limit` **缺省 = 不限制**；`--limit 0` 是字面意义的「一条都不要」
+  （用 `Option<usize>` 区分「没给」和「给了 0」，不再需要「0 表示全部」这种
+  反直觉约定）。底层用 `core::NO_LIMIT`：`usize::MAX` 转成 `i64` 是 `-1`，
+  SQLite 的负数 `LIMIT` 正是不限，`Vec::truncate` 也是无操作。
 - 文件名 `<创建日期>_<标题 slug>_<id 前 12 位>.json`：日期在前可按时间自然
   排序，标题让人在文件树里认出对话，id 段保证不互相覆盖。标题里的空格 /
   斜杠 / emoji 折叠成 `-`；**id 段单独消毒**，不能靠「数据库里的 id 应该
@@ -67,7 +77,8 @@ aa-session --app opencode export-many --project /home/aa/repos/ai_ls/AAgent -o e
 - 默认**跳过**已存在的同名文件，所以能反复重跑补增量；`--force` 才覆盖。
   文件名里的日期取自**创建时间**，会话后续更新不改名，刷新内容必须 `--force`。
 - 单条会话失败**不中断整批**，其余照常写入，最后以非零退出码报告失败数。
-- `--dry-run` 只打印清单（文件名 + 目标目录），不创建目录也不写盘。
+- `--dry-run` 只打印清单（文件名 + 目标目录），不创建目录也不写盘；
+  单会话模式下同样可用，且不会 dump 内容（先校验 id 存在）。
 
 不合并成单个大文件，是因为：编辑器每次命中都落在具体会话上；增量重跑只写
 新增；每份导出物本身就是单会话导出格式，将来要 `import` 不用再拆。
@@ -212,7 +223,7 @@ comfy-table 要 `0.2`。我们的直接依赖必须写 `"0.2"` 而不是 `"0.2.2
 | `just projects [过滤]`     | 列出项目（等价 `aa-session --app opencode projects`）       |
 | `just sessions [过滤]`     | 列出会话                                                    |
 | `just dump <ID> [路径]`    | 导出会话，不给路径时落到 `exports/<ID>.json`                |
-| `just dump-many <目录子串> [目录]` | 批量导出该目录下的会话，默认落到 `exports/<目录子串>/` |
+| `just dump-dir <目录子串> [目录]` | 按目录批量导出，默认落到 `exports/<目录子串>/opencode/` |
 | `just zed <ID> [路径]`     | 导出后直接用 Zed 打开                                       |
 | `just find <模式>`         | 在 `exports/` 里全文搜索（等价于 Zed 的 cmd+f，但可脚本化） |
 | `just ci`                  | `fmt --check` + `clippy` + `test`，提交前跑这个             |
@@ -276,7 +287,7 @@ apps/cli/          clap 入口
 
 ## 导出格式
 
-单会话导出（`show` / `export`，以及 `export-many` 的每个文件）是**原始记录的
+单会话导出（`show` / `export <ID>`，以及 `export` 批量模式下的每个文件）是**原始记录的
 无损镜像**，不做归一：
 
 ```json
@@ -298,7 +309,7 @@ apps/cli/          clap 入口
   在 Zed 里搜「音频解码」直接命中原文。
 - 代价是体积：单会话实测可达 33 MB（主要是文件全文和命令输出）。批量导出前
   先 `--dry-run` 看清单。
-- `export-many` 还会在输出目录里写 `_index.json`：筛选条件快照 + 每个文件的
+- `export` 批量模式还会在输出目录里写 `_index.json`：筛选条件快照 + 每个文件的
   id / 标题 / 路径 / token / 字节数。它描述**本次运行的结果**，每次重写，别手改。
 
 ## 🚫 硬约束：不写 opencode 库

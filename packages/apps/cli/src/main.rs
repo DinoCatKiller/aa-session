@@ -16,7 +16,7 @@ use output::{human_bytes, out};
 use std::path::{Path, PathBuf};
 
 use aa_session_core::{
-    Archived, EmptySessions, Error, NO_LIMIT, ProjectSelector, SessionFilter, SessionImporter,
+    Archived, EmptySessions, NO_LIMIT, ProjectSelector, SessionFilter, SessionImporter,
     SessionMeta, SessionSource, SortKey, Subagents,
 };
 use aa_session_source_codebuddy::CodebuddySource;
@@ -64,9 +64,12 @@ const BEFORE_HELP: &str = "\
 典型流程
   1. 看看有哪些项目          aa-session --app opencode projects
   2. 挑一个项目看会话        aa-session --app opencode sessions --project-like LocalDub
-  3. 导出会话                aa-session --app opencode export <SESSION_ID> -o chat.json
-  4. 批量导出某个目录        aa-session --app opencode export-many --directory LocalDub -o exports/LocalDub
-  5. 在编辑器里全文搜索      zed exports/LocalDub     （目录可直接打开并跨文件搜索）
+  3. 导出单个会话            aa-session --app opencode export <SESSION_ID> -o chat.json
+  4. 导出某个目录的会话      aa-session --app opencode export --directory LocalDub -o exports/LocalDub/opencode
+  5. 在编辑器里全文搜索      zed exports/LocalDub/opencode   （目录可直接打开并跨文件搜索）
+
+`export` 只有一条命令：给 SESSION_ID 就导一个文件，不给就按筛选条件批量导到
+文件夹（一会话一文件 + `_index.json`）。
 
 导出的 JSON 是原始记录的完整镜像（含工具调用的参数与结果），保留原始字符串，
 可直接被编辑器的搜索命中；单会话可达数十 MB，批量导出前先 `--dry-run` 看清单。
@@ -214,33 +217,43 @@ enum Command {
         session_id: String,
     },
 
-    /// 把一个会话的全部原始数据导出为 JSON 文件。
+    /// 导出会话：给 SESSION_ID 导一个文件；不给则按筛选条件批量导出到文件夹。
+    ///
+    /// 两种用法是同一条命令，**区别只在于给不给 SESSION_ID**：
+    ///
+    /// `aa-session --app opencode export <SESSION_ID> -o chat.json`
+    ///
+    /// `aa-session --app opencode export --directory LocalDub -o exports/LocalDub/opencode`
+    ///
+    /// 批量模式的产物是给人读的文件树：一会话一文件，文件名形如
+    /// `2026-10-24_修复导出_ses_01234567.json`，目录里附一个 `_index.json`
+    /// （筛选条件快照 + 每个文件的元数据）。默认只导**顶层 / 未归档 /
+    /// 非空壳**会话；已存在的同名文件默认**跳过**（方便反复重跑补增量），
+    /// `--force` 覆盖；单条失败不中断整批。先跑 `--dry-run` 看清单。
+    ///
+    /// 批量模式必须至少给一个筛选条件（或用 `--all` 显式导出全部），
+    /// 避免一条手滑命令把整个库写进当前目录。
     Export {
-        /// 会话 id。
-        session_id: String,
+        /// 会话 id。给了就是单会话导出；不给则进入批量模式。
+        session_id: Option<String>,
 
-        /// 输出路径。缺省写到 `./<session_id>.json`。
+        /// 输出路径。单会话模式是**文件**（缺省 `./<id>.json`），
+        /// 批量模式是**目录**（必须显式指定，不存在则创建）。
         #[arg(short, long, value_name = "PATH")]
         output: Option<PathBuf>,
 
-        /// 覆盖已存在的输出文件。
+        /// 覆盖已存在的文件：单会话模式是「允许覆盖」，批量模式是
+        /// 「覆盖同名文件」（默认跳过已存在的）。
         #[arg(short, long)]
         force: bool,
-    },
 
-    /// 批量导出：把一组会话写到一个文件夹（一会话一文件 + `_index.json`）。
-    ///
-    /// 筛选条件与 `sessions` 完全一致；默认同样只导出**顶层 / 未归档 /
-    /// 非空壳**的会话。产物是给人读的文件树：文件名形如
-    /// `2026-10-24_修复导出_ses_01234567.json`，编辑器里按文件名就能认出
-    /// 对话，全文检索又能直接命中文件内容。
-    ///
-    /// 已存在的同名文件默认**跳过**（方便反复重跑补增量），`--force` 覆盖。
-    /// 单条会话失败不会中断整批。先跑 `--dry-run` 看清单。
-    ExportMany {
-        /// 输出目录（不存在则创建）。
-        #[arg(short = 'o', long = "out-dir", value_name = "DIR")]
-        out_dir: PathBuf,
+        /// 只打印将要写出的路径，不写盘。
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 批量模式：允许不筛选、导出该 app 的全部会话。
+        #[arg(long)]
+        all: bool,
 
         /// 只导出该项目的会话。**只接受绝对路径，全等匹配** `project.worktree`。
         #[arg(long = "project", value_name = "ABS_PATH")]
@@ -280,23 +293,14 @@ enum Command {
         #[arg(long, value_enum, default_value_t = EmptyArg::Exclude, value_name = "MODE")]
         empty: EmptyArg,
 
-        /// 最多导出多少条。**0（默认）= 不限制**。
-        ///
-        /// 注意与 `sessions --limit` 不同：那里 0 就是「一条都不要」。
-        #[arg(short, long, default_value_t = 0)]
-        limit: usize,
+        /// 批量模式：最多导出多少条（缺省 = 不限制；0 = 一条都不要）。
+        #[arg(short, long, value_name = "N")]
+        limit: Option<usize>,
 
-        /// 排序键（同时决定导出顺序和 `_index.json` 的顺序）。
-        #[arg(long, value_enum, default_value_t = SortArg::Updated)]
-        sort: SortArg,
-
-        /// 覆盖已存在的同名文件（默认跳过）。
-        #[arg(short, long)]
-        force: bool,
-
-        /// 只打印将要导出的文件，不写盘。
-        #[arg(long)]
-        dry_run: bool,
+        /// 批量模式：排序键（缺省按最后更新时间倒序，同时决定
+        /// `_index.json` 的顺序）。
+        #[arg(long, value_enum, value_name = "KEY")]
+        sort: Option<SortArg>,
     },
 
     /// 查看该 app 的登录态（账号 + 凭据有效期）。
@@ -446,7 +450,7 @@ impl AppArg {
 }
 
 /// 归档会话的纳入方式（对应 `aa_session_core::Archived`）。
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ArchArg {
     /// 排除归档会话（默认）。
     Exclude,
@@ -467,7 +471,7 @@ impl From<ArchArg> for Archived {
 }
 
 /// 空壳会话（0 消息）的纳入方式（对应 `aa_session_core::EmptySessions`）。
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum EmptyArg {
     /// 排除空壳会话（默认）—— opencode 的 UI 也不显示它们。
     Exclude,
@@ -488,7 +492,7 @@ impl From<EmptyArg> for EmptySessions {
 }
 
 /// 子 agent 会话的纳入方式（对应 `aa_session_core::Subagents`）。
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum SubArg {
     /// 只显示顶层会话（默认）。
     Exclude,
@@ -649,34 +653,10 @@ fn main() -> Result<()> {
 
         Command::Export {
             session_id,
-            output: output_path,
+            output,
             force,
-        } => {
-            let file = assemble(source.as_ref(), &session_id)?;
-
-            let path = output_path.unwrap_or_else(|| PathBuf::from(format!("{session_id}.json")));
-            if path.exists() && !force {
-                anyhow::bail!(
-                    "{} 已存在；加 --force 覆盖，或用 -o 指定别的路径",
-                    path.display()
-                );
-            }
-
-            let text = serde_json::to_string_pretty(&file)?;
-            std::fs::write(&path, &text).map_err(|e| Error::Io {
-                path: path.display().to_string(),
-                cause: e.to_string(),
-            })?;
-
-            out(format_args!(
-                "已导出（{} 字节）→ {}",
-                text.len(),
-                path.display()
-            ));
-        }
-
-        Command::ExportMany {
-            out_dir,
+            dry_run,
+            all,
             project,
             project_like,
             directory,
@@ -688,40 +668,99 @@ fn main() -> Result<()> {
             empty,
             limit,
             sort,
-            force,
-            dry_run,
-        } => {
-            let query = QueryArgs {
-                project,
-                project_like,
-                directory,
-                agents,
-                title,
-                since,
-                subagents,
-                archived,
-                empty,
-                sort,
-            };
+        } => match session_id {
+            // ---- 单会话 ----
+            Some(id) => {
+                // 筛选参数在单会话模式下没有意义。静默忽略会让用户以为
+                // `--title x` 生效了，不如直接拒绝。
+                let ignored = [
+                    ("--all", all),
+                    ("--project", project.is_some()),
+                    ("--project-like", project_like.is_some()),
+                    ("--directory", directory.is_some()),
+                    ("--agent", !agents.is_empty()),
+                    ("--title", title.is_some()),
+                    ("--since", since.is_some()),
+                    ("--limit", limit.is_some()),
+                    ("--sort", sort.is_some()),
+                    ("--subagents", subagents != SubArg::Exclude),
+                    ("--archived", archived != ArchArg::Exclude),
+                    ("--empty", empty != EmptyArg::Exclude),
+                ];
+                let ignored: Vec<&str> = ignored
+                    .iter()
+                    .filter(|(_, provided)| *provided)
+                    .map(|(flag, _)| *flag)
+                    .collect();
+                if !ignored.is_empty() {
+                    anyhow::bail!(
+                        "单会话导出不接受这些参数：{}\n\
+                         要按条件批量导出请省略 SESSION_ID。",
+                        ignored.join(", ")
+                    );
+                }
+                export::write_single(source.as_ref(), &id, output, force, dry_run)?;
+            }
 
-            // 批量导出里 `--limit 0` 必须理解为「不限制」：用户来批量导出就是
-            // 要「这个目录下的全部会话」，默认值卡在 0 条毫无意义。
-            // `sessions` 的 0 是字面意义（一条都不要），两处语义不同，
-            // 故用显式的 NO_LIMIT 常量而不是 0。
-            let limit = if limit == 0 { NO_LIMIT } else { limit };
-            let sessions = query_sessions(source.as_ref(), &query, limit)?;
+            // ---- 批量 ----
+            None => {
+                let has_filter = project.is_some()
+                    || project_like.is_some()
+                    || directory.is_some()
+                    || title.is_some()
+                    || since.is_some()
+                    || !agents.is_empty();
 
-            export::run_batch(
-                source.as_ref(),
-                &sessions,
-                &export::BatchOptions {
-                    out_dir,
-                    force,
-                    dry_run,
-                },
-                query.describe(),
-            )?;
-        }
+                // `--subagents` / `--archived` / `--empty` 是「放宽范围」的开关，
+                // 不算筛选条件 —— 光给它们仍然等于「整个库」。
+                if all && has_filter {
+                    anyhow::bail!("--all 与筛选条件互斥：要么导出全部，要么给出筛选条件。");
+                }
+                if !all && !has_filter {
+                    anyhow::bail!(
+                        "批量导出需要至少一个筛选条件（--project / --project-like / \
+                         --directory / --agent / --title / --since），\n\
+                         或者加 --all 导出该 app 的全部会话。\n\
+                         只想导出一个会话就直接写 SESSION_ID。"
+                    );
+                }
+
+                let Some(out_dir) = output else {
+                    anyhow::bail!(
+                        "批量导出需要 -o 指定输出目录，例如 -o exports/LocalDub/opencode"
+                    );
+                };
+
+                let query = QueryArgs {
+                    project,
+                    project_like,
+                    directory,
+                    agents,
+                    title,
+                    since,
+                    subagents,
+                    archived,
+                    empty,
+                    sort: sort.unwrap_or(SortArg::Updated),
+                };
+                // 缺省 = 不限制。用 `Option` 而不是「0 表示不限制」：这样
+                // `--limit 0` 仍然是字面意义（一条都不要），不会出现
+                // 「想试 0 条结果导出了全部」这种反直觉行为。
+                let limit = limit.unwrap_or(NO_LIMIT);
+                let sessions = query_sessions(source.as_ref(), &query, limit)?;
+
+                export::run_batch(
+                    source.as_ref(),
+                    &sessions,
+                    &export::BatchOptions {
+                        out_dir,
+                        force,
+                        dry_run,
+                    },
+                    query.describe(),
+                )?;
+            }
+        },
 
         Command::Auth {
             format,

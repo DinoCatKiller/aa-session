@@ -52,6 +52,56 @@ pub fn assemble(source: &dyn SessionSource, session_id: &str) -> Result<serde_js
     }))
 }
 
+/// 单会话导出：写一个 JSON 文件，或只预演。
+///
+/// 与批量模式共用 `-o/--force/--dry-run`，但这里的 `-o` 是**文件路径**。
+pub fn write_single(
+    source: &dyn SessionSource,
+    session_id: &str,
+    output: Option<PathBuf>,
+    force: bool,
+    dry_run: bool,
+) -> Result<()> {
+    let path = output.unwrap_or_else(|| PathBuf::from(format!("{session_id}.json")));
+
+    if path.exists() && !force {
+        anyhow::bail!(
+            "{} 已存在；加 --force 覆盖，或用 -o 指定别的路径",
+            path.display()
+        );
+    }
+
+    if dry_run {
+        // 预演不 dump（那才是贵的部分），但要确认会话真的存在，
+        // 否则打错 id 的预演会给出虚假的「将写入」。
+        if source.session(session_id)?.is_none() {
+            anyhow::bail!("会话 {session_id} 不存在");
+        }
+        out(format_args!("将写入 {}（预演，不写盘）", path.display()));
+        return Ok(());
+    }
+
+    let file = assemble(source, session_id)?;
+    let text = serde_json::to_string_pretty(&file)?;
+
+    // 顺手创建父目录：`-o exports/foo/chat.json` 不该因为 exports/foo
+    // 不存在而失败，批量模式也是同样的行为。
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("无法创建输出目录 {}", parent.display()))?;
+    }
+    std::fs::write(&path, &text).with_context(|| format!("写入 {} 失败", path.display()))?;
+
+    out(format_args!(
+        "已导出（{} 字节）→ {}",
+        text.len(),
+        path.display()
+    ));
+    Ok(())
+}
+
 /// 批量导出的选项。
 #[derive(Debug, Clone)]
 pub struct BatchOptions {
