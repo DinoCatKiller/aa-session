@@ -106,7 +106,8 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<AppCredentials>> {
 
     // 轮转文件的 stem 里有一段 ISO 时间戳（含 `T` 且够长）。
     let is_rotated_stem = |stem: &str| {
-        stem.split('.').any(|seg| seg.contains('T') && seg.len() >= 15)
+        stem.split('.')
+            .any(|seg| seg.contains('T') && seg.len() >= 15)
     };
 
     // 第一遍：当前文件 = stem 里没有时间戳段的。
@@ -201,13 +202,9 @@ mod tests {
     fn rotated_file_names_are_detected() {
         // 时间戳段含 T 且长度 >= 15
         let rotated = "Tencent-Cloud.coding-copilot.2026-08-19T22-35-13-981Z.193240.1b288854";
-        assert!(rotated
-            .split('.')
-            .any(|s| s.contains('T') && s.len() >= 15));
+        assert!(rotated.split('.').any(|s| s.contains('T') && s.len() >= 15));
 
         let current = "Tencent-Cloud.coding-copilot";
-        assert!(!current
-            .split('.')
-            .any(|s| s.contains('T') && s.len() >= 15));
+        assert!(!current.split('.').any(|s| s.contains('T') && s.len() >= 15));
     }
 }

@@ -26,8 +26,8 @@ pub mod rename;
 use std::path::{Path, PathBuf};
 
 use aa_session_core::{
-    DirectoryMeta, Error, ProjectMeta, ProjectSelector, Result,
-    SessionFilter, SessionMeta, SessionSource, SortKey,
+    DirectoryMeta, Error, ProjectMeta, ProjectSelector, Result, SessionFilter, SessionMeta,
+    SessionSource, SortKey,
 };
 use rusqlite::{Connection, OpenFlags, Row, params};
 
@@ -207,16 +207,11 @@ impl OpencodeSource {
     ///
     /// `data` 列等 TEXT 值保留为字符串（含内嵌 JSON 串），不做二次解析，
     /// 保证无损。
-    fn dump_rows_by_sql(
-        &self,
-        sql: &str,
-        session_id: &str,
-    ) -> Result<Vec<serde_json::Value>> {
+    fn dump_rows_by_sql(&self, sql: &str, session_id: &str) -> Result<Vec<serde_json::Value>> {
         use rusqlite::types::ValueRef;
 
         let mut stmt = self.conn().prepare(sql).map_err(query_err)?;
-        let col_names: Vec<String> =
-            stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let mut rows = stmt.query(params![session_id]).map_err(query_err)?;
 
         let mut out = Vec::new();
@@ -248,20 +243,17 @@ impl OpencodeSource {
     ///
     /// v1 分支额外带上「排除已在 v2 里出现的会话」，保证 UNION ALL 之后
     /// 没有重复。
-    fn build_where_with(
-        &self,
-        filter: &SessionFilter,
-        is_v1: bool,
-    ) -> Result<BuildWhereResult> {
+    fn build_where_with(&self, filter: &SessionFilter, is_v1: bool) -> Result<BuildWhereResult> {
         let mut result = build_where(filter);
         if is_v1 {
             // v1 分支：空壳判定改走 `message` 表（v2 的 `session_message` 对
             // 早期会话没用，那批会话的消息全在 v1 的 `message` 里）。
-            result.sql = result.sql.replace(
-                filter.empty.sql_filter(),
-                filter.empty.sql_filter_v1(),
-            );
-            result.sql.push_str(" AND s.id NOT IN (SELECT id FROM session_v2)");
+            result.sql = result
+                .sql
+                .replace(filter.empty.sql_filter(), filter.empty.sql_filter_v1());
+            result
+                .sql
+                .push_str(" AND s.id NOT IN (SELECT id FROM session_v2)");
         }
         Ok(result)
     }
@@ -593,7 +585,6 @@ impl SessionSource for OpencodeSource {
         self.collect_rows(&sql, &refs, session_from_row)
     }
 
-
     fn session(&self, session_id: &str) -> Result<Option<SessionMeta>> {
         // 先查 v2，查不到再查 v1 —— 同 id 的两份记录以 v2 为准。
         let v2 = format!("SELECT {SESSION_COLUMNS} {SESSION_FROM_PROJECT} WHERE s.id = ?1");
@@ -605,9 +596,7 @@ impl SessionSource for OpencodeSource {
             return Ok(Some(meta));
         }
 
-        let v1 = format!(
-            "SELECT {SESSION_COLUMNS_V1} {SESSION_FROM_PROJECT_V1} WHERE s.id = ?1"
-        );
+        let v1 = format!("SELECT {SESSION_COLUMNS_V1} {SESSION_FROM_PROJECT_V1} WHERE s.id = ?1");
         Ok(self
             .collect_rows(&v1, &[&session_id], session_from_row)?
             .into_iter()
@@ -758,8 +747,11 @@ mod auth_tests {
         });
         let masked = mask_credential(&cred, false);
         assert!(!masked.to_string().contains("abcdefghijklmnop"));
-        assert_eq!(masked["accessMasked"].as_str().unwrap().chars().count(), 8 + "…（20 字符）".chars().count());
-        assert_eq!(masked["refreshMasked"].as_str().unwrap().is_empty(), false);
+        assert_eq!(
+            masked["accessMasked"].as_str().unwrap().chars().count(),
+            8 + "…（20 字符）".chars().count()
+        );
+        assert!(!masked["refreshMasked"].as_str().unwrap().is_empty());
         assert_eq!(masked["expiresStatus"]["state"], "valid");
     }
 

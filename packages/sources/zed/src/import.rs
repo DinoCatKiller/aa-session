@@ -22,11 +22,7 @@ use std::path::Path;
 use crate::APP_NAME;
 
 /// 执行一次导入（预检或写入）。
-pub fn run(
-    source: &mut crate::ZedSource,
-    export_path: &Path,
-    apply: bool,
-) -> Result<ImportReport> {
+pub fn run(source: &mut crate::ZedSource, export_path: &Path, apply: bool) -> Result<ImportReport> {
     use aa_session_core::Error as AaError;
 
     // 1. 读 + 校验 export 文件
@@ -50,9 +46,7 @@ pub fn run(
         .get("raw_data")
         .and_then(|r| r.get("columns"))
         .ok_or_else(|| {
-            Error::InvalidArgument(
-                "export 文件缺 `raw_data.columns`，不是本工具的导出产物".into(),
-            )
+            Error::InvalidArgument("export 文件缺 `raw_data.columns`，不是本工具的导出产物".into())
         })?;
     let thread_json = parsed
         .get("raw_data")
@@ -62,9 +56,10 @@ pub fn run(
                 "export 文件缺 `raw_data.thread_json`，不是本工具的导出产物".into(),
             )
         })?;
-    let session_id = columns.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
-        Error::InvalidArgument("export 文件 `raw_data.columns` 缺 `id`".into())
-    })?;
+    let session_id = columns
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidArgument("export 文件 `raw_data.columns` 缺 `id`".into()))?;
 
     // 2. 查是否已存在（决定覆盖 / 新增）
     let is_overwrite = source.thread_exists(session_id)?;
@@ -80,15 +75,15 @@ pub fn run(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let mut backup_path = source.path().with_file_name(format!(
-            "threads.db.aa_session_backup_{ts}"
-        ));
+        let mut backup_path = source
+            .path()
+            .with_file_name(format!("threads.db.aa_session_backup_{ts}"));
         let mut suffix = 0u32;
         while backup_path.exists() {
             suffix += 1;
-            backup_path = source.path().with_file_name(format!(
-                "threads.db.aa_session_backup_{ts}_{suffix}"
-            ));
+            backup_path = source
+                .path()
+                .with_file_name(format!("threads.db.aa_session_backup_{ts}_{suffix}"));
         }
         {
             let conn = source.conn_mut();
@@ -115,10 +110,12 @@ pub fn run(
             if is_overwrite { "覆盖" } else { "新增" }
         )
     } else {
-        let verb = if is_overwrite { "将覆盖" } else { "将新增" };
-        format!(
-            "{verb}线程 {session_id}；加 --apply 执行（写前会自动备份 threads.db）"
-        )
+        let verb = if is_overwrite {
+            "将覆盖"
+        } else {
+            "将新增"
+        };
+        format!("{verb}线程 {session_id}；加 --apply 执行（写前会自动备份 threads.db）")
     };
 
     Ok(ImportReport {
@@ -133,9 +130,8 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use aa_session_core::SessionImporter;
     use crate::ZedSource;
+    use aa_session_core::SessionImporter;
 
     /// 在临时目录里造一个「空 threads 表」的库 + 一个 export 文件，
     /// 跑「预检 → apply → 再 apply 覆盖」全流程，验证：
@@ -145,10 +141,8 @@ mod tests {
     ///  - 备份文件存在且可读
     #[test]
     fn import_flow_preflight_then_apply_then_overwrite() {
-        let dir = std::env::temp_dir().join(format!(
-            "aa_session_zed_import_test_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("aa_session_zed_import_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let db_path = dir.join("threads.db");
 
@@ -203,7 +197,10 @@ mod tests {
         // 4. 预检：不写库，不产生备份
         let preflight = source.import(&export_path, false).unwrap();
         assert!(!preflight.applied);
-        assert!(!preflight.is_overwrite, "库里还没有这个线程，应是「将新增」");
+        assert!(
+            !preflight.is_overwrite,
+            "库里还没有这个线程，应是「将新增」"
+        );
         assert_eq!(preflight.backup, None);
         assert!(db_backup_count(&dir) == 0, "预检不应产生备份");
         let count_after_preflight: i64 = {
@@ -321,4 +318,3 @@ mod tests {
             .count() as u32
     }
 }
-

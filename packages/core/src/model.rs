@@ -121,10 +121,10 @@ impl SessionMeta {
     }
 }
 
-/// 会话中的一条消息（原始数据，由各 source crate 自己定义字段）。
-///
-/// 已删除：opencode/codebuddy 各自用 `serde_json::Value` 原样存原始数据，
-/// 不走统一抽象。`SessionMeta` 保留用于 `sessions` 列表命令（最小公约数）。
+// 会话中的一条消息（原始数据，由各 source crate 自己定义字段）。
+//
+// 已删除：opencode/codebuddy 各自用 `serde_json::Value` 原样存原始数据，
+// 不走统一抽象。`SessionMeta` 保留用于 `sessions` 列表命令（最小公约数）。
 
 #[cfg(test)]
 mod tests {

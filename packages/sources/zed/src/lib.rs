@@ -108,7 +108,6 @@ impl ZedSource {
         &mut self.conn
     }
 
-    
     /// 覆盖导入一个 export 文件（同 `id` 整行替换）。
     ///
     /// 写库前的安全契约由调用方（CLI `import` 子命令）负责：
@@ -124,18 +123,37 @@ impl ZedSource {
     ) -> Result<usize> {
         let tj = thread_json;
         let cols = columns;
-        let get = |k: &str| {
-            cols.get(k)
+        let get = |k: &str| cols.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let id: String = cols
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(thread_id)
+            .to_string();
+        let summary = get("summary").unwrap_or_else(|| {
+            tj.get("title")
                 .and_then(|v| v.as_str())
-                .map(str::to_string)
-        };
-        let id: String = cols.get("id").and_then(|v| v.as_str()).unwrap_or(thread_id).to_string();
-        let summary = get("summary").unwrap_or_else(|| tj.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string());
-        let updated_at = get("updated_at").unwrap_or_else(|| tj.get("updated_at").and_then(|v| v.as_str()).unwrap_or_default().to_string());
+                .unwrap_or_default()
+                .to_string()
+        });
+        let updated_at = get("updated_at").unwrap_or_else(|| {
+            tj.get("updated_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        });
         let created_at = get("created_at").unwrap_or_else(|| updated_at.clone());
-        let parent_id = cols.get("parent_id").and_then(|v| v.as_str()).map(str::to_string);
-        let folder_paths = cols.get("folder_paths").and_then(|v| v.as_str()).map(str::to_string);
-        let folder_paths_order = cols.get("folder_paths_order").and_then(|v| v.as_str()).map(str::to_string);
+        let parent_id = cols
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let folder_paths = cols
+            .get("folder_paths")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let folder_paths_order = cols
+            .get("folder_paths_order")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
 
         let data = compress_thread_json(tj)?;
         let conn = self.conn_mut();
@@ -182,8 +200,9 @@ impl ZedSource {
         map_row: impl Fn(&Row<'_>) -> Result<T>,
     ) -> Result<Vec<T>> {
         let mut stmt = self.conn.prepare(sql).map_err(query_err)?;
-        let mut rows =
-            stmt.query(rusqlite::params_from_iter(binds.iter())).map_err(query_err)?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(binds.iter()))
+            .map_err(query_err)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(query_err)? {
             out.push(map_row(row)?);
@@ -225,8 +244,7 @@ fn decompress_zstd(blob: &[u8]) -> Result<Vec<u8>> {
 
 /// 压缩 DbThread JSON（与 zed 的 `zstd::encode_all(level 3)` 一致）。
 fn compress_thread_json(json: &serde_json::Value) -> Result<Vec<u8>> {
-    let json_bytes =
-        serde_json::to_vec(json).map_err(|cause| Error::Query(cause.to_string()))?;
+    let json_bytes = serde_json::to_vec(json).map_err(|cause| Error::Query(cause.to_string()))?;
     let mut out = Vec::new();
     {
         let mut encoder = zstd::stream::write::Encoder::new(&mut out, 3)
@@ -235,7 +253,9 @@ fn compress_thread_json(json: &serde_json::Value) -> Result<Vec<u8>> {
         encoder
             .write_all(&json_bytes)
             .map_err(|cause| Error::Query(cause.to_string()))?;
-        encoder.finish().map_err(|cause| Error::Query(format!("zstd finish: {cause}")))?;
+        encoder
+            .finish()
+            .map_err(|cause| Error::Query(format!("zstd finish: {cause}")))?;
     }
     Ok(out)
 }
@@ -294,7 +314,12 @@ fn parse_zed_timestamp(s: &str) -> i64 {
             let sec = s.parse::<i64>().unwrap_or(0);
             // 小数部分可能是 3~9 位，取前 3 位当毫秒，不足补 0。
             let padded = format!("{frac:3}");
-            let ms: i64 = padded.chars().take(3).collect::<String>().parse().unwrap_or(0);
+            let ms: i64 = padded
+                .chars()
+                .take(3)
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0);
             (sec, ms)
         }
         None => (parts[5].parse().unwrap_or(0), 0),
@@ -362,7 +387,9 @@ fn escape_like(input: &str) -> String {
 /// 精确语义 = 该路径是会话涉及的目录之一（任意一段等于它）。
 /// 在 Rust 里做，避免 SQLite 单引号字面量里 `\n` 的坑。
 fn matches_project_exact(folder_paths_raw: &Option<String>, path: &str) -> bool {
-    split_folder_paths(folder_paths_raw.as_deref()).iter().any(|seg| seg == path)
+    split_folder_paths(folder_paths_raw.as_deref())
+        .iter()
+        .any(|seg| seg == path)
 }
 
 impl SessionSource for ZedSource {
@@ -375,15 +402,12 @@ impl SessionSource for ZedSource {
     /// zed 没有 project 表，项目 = `folder_paths` 第一段的去重结果。
     fn projects(&self) -> Result<Vec<ProjectMeta>> {
         let rows: Vec<(Option<String>, String)> =
-            self.collect_rows(
-                "SELECT folder_paths, updated_at FROM threads", &[],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0).map_err(query_err)?,
-                        row.get::<_, String>(1).map_err(query_err)?,
-                    ))
-                },
-            )?;
+            self.collect_rows("SELECT folder_paths, updated_at FROM threads", &[], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0).map_err(query_err)?,
+                    row.get::<_, String>(1).map_err(query_err)?,
+                ))
+            })?;
 
         let mut by_dir: std::collections::BTreeMap<String, (i64, Option<i64>)> =
             std::collections::BTreeMap::new();
@@ -439,21 +463,22 @@ impl SessionSource for ZedSource {
     /// zed 里一个线程可跨多个目录（`folder_paths` 是列表），所以
     /// `project_count` 表示「涉及该目录的不同线程数」。
     fn directories(&self) -> Result<Vec<DirectoryMeta>> {
-        let rows: Vec<(String, Option<String>, String)> =
-            self.collect_rows(
-                "SELECT id, folder_paths, updated_at FROM threads",
-                &[],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0).map_err(query_err)?,
-                        row.get::<_, Option<String>>(1).map_err(query_err)?,
-                        row.get::<_, String>(2).map_err(query_err)?,
-                    ))
-                },
-            )?;
+        let rows: Vec<(String, Option<String>, String)> = self.collect_rows(
+            "SELECT id, folder_paths, updated_at FROM threads",
+            &[],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0).map_err(query_err)?,
+                    row.get::<_, Option<String>>(1).map_err(query_err)?,
+                    row.get::<_, String>(2).map_err(query_err)?,
+                ))
+            },
+        )?;
 
-        let mut by_dir: std::collections::BTreeMap<String, (i64, i64, std::collections::HashSet<String>)> =
-            std::collections::BTreeMap::new();
+        let mut by_dir: std::collections::BTreeMap<
+            String,
+            (i64, i64, std::collections::HashSet<String>),
+        > = std::collections::BTreeMap::new();
         for (id, folder_paths, updated_at) in rows {
             let updated_ms = parse_zed_timestamp(&updated_at);
             for dir in split_folder_paths(folder_paths.as_deref()) {
@@ -534,7 +559,13 @@ impl SessionSource for ZedSource {
             }
 
             out.push(thread_from_row(
-                id, summary, updated_at, data, parent_id, folder_paths, created_at,
+                id,
+                summary,
+                updated_at,
+                data,
+                parent_id,
+                folder_paths,
+                created_at,
             ));
         }
 
@@ -573,7 +604,13 @@ impl SessionSource for ZedSource {
             .unwrap_or(serde_json::Value::Null);
 
         Ok(Some(thread_from_row(
-            id, summary, updated_at, data, parent_id, folder_paths, created_at,
+            id,
+            summary,
+            updated_at,
+            data,
+            parent_id,
+            folder_paths,
+            created_at,
         )))
     }
 
@@ -601,8 +638,17 @@ impl SessionSource for ZedSource {
             },
         )?;
 
-        let Some((id, summary, updated_at, data, parent_id, folder_paths, folder_paths_order, created_at, data_type)) =
-            row.into_iter().next()
+        let Some((
+            id,
+            summary,
+            updated_at,
+            data,
+            parent_id,
+            folder_paths,
+            folder_paths_order,
+            created_at,
+            data_type,
+        )) = row.into_iter().next()
         else {
             return Err(Error::NotFound(format!(
                 "thread {session_id} not found in threads.db"
@@ -615,7 +661,6 @@ impl SessionSource for ZedSource {
             serde_json::from_slice(&thread_json_bytes).map_err(|cause| Error::MalformedJson {
                 location: format!("thread:{id}"),
                 cause,
-
             })?;
 
         Ok(serde_json::json!({
@@ -679,7 +724,9 @@ fn thread_from_row(
             (
                 u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
                 u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                u.get("reasoning_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                u.get("reasoning_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
             )
         })
         .unwrap_or((0, 0, 0));
@@ -737,13 +784,11 @@ fn apply_sort(out: &mut [SessionMeta], sort: SortKey) {
                 .cmp(&b.title.to_lowercase())
                 .then(a.id.cmp(&b.id))
         }),
-        SortKey::Tokens => {
-            out.sort_by(|a, b| {
-                let ta = a.tokens_input + a.tokens_output;
-                let tb = b.tokens_input + b.tokens_output;
-                tb.cmp(&ta).then(a.id.cmp(&b.id))
-            })
-        }
+        SortKey::Tokens => out.sort_by(|a, b| {
+            let ta = a.tokens_input + a.tokens_output;
+            let tb = b.tokens_input + b.tokens_output;
+            tb.cmp(&ta).then(a.id.cmp(&b.id))
+        }),
     }
 }
 

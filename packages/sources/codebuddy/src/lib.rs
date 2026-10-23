@@ -15,8 +15,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aa_session_core::{
-    DirectoryMeta, Error, ProjectMeta, ProjectSelector, Result,
-    SessionFilter, SessionMeta, SessionSource, SortKey,
+    DirectoryMeta, Error, ProjectMeta, ProjectSelector, Result, SessionFilter, SessionMeta,
+    SessionSource, SortKey,
 };
 
 pub mod auth;
@@ -67,11 +67,10 @@ impl CodebuddySource {
         }
 
         let mut files = Vec::new();
-        let entries = fs::read_dir(&projects_dir)
-            .map_err(|e| Error::Open {
-                path: projects_dir.display().to_string(),
-                cause: e.to_string(),
-            })?;
+        let entries = fs::read_dir(&projects_dir).map_err(|e| Error::Open {
+            path: projects_dir.display().to_string(),
+            cause: e.to_string(),
+        })?;
 
         for entry in entries.flatten() {
             let proj_dir = entry.path();
@@ -81,9 +80,7 @@ impl CodebuddySource {
             if let Ok(sessions) = fs::read_dir(&proj_dir) {
                 for s in sessions.flatten() {
                     let p = s.path();
-                    if p.extension().map(|e| e == "jsonl").unwrap_or(false)
-                        && !p.is_dir()
-                    {
+                    if p.extension().map(|e| e == "jsonl").unwrap_or(false) && !p.is_dir() {
                         files.push(p);
                     }
                 }
@@ -114,7 +111,6 @@ impl CodebuddySource {
 
         Err(Error::NotFound(format!("session {session_id}")))
     }
-
 }
 
 /// 读一个 JSONL 文件的全部事件（跳过空行与坏 JSON）。
@@ -293,8 +289,7 @@ impl SessionSource for CodebuddySource {
                         .flatten()
                         .filter_map(|s| {
                             let p = s.path();
-                            if p.extension().map(|e| e == "jsonl").unwrap_or(false) && !p.is_dir()
-                            {
+                            if p.extension().map(|e| e == "jsonl").unwrap_or(false) && !p.is_dir() {
                                 Some(p)
                             } else {
                                 None
@@ -329,7 +324,9 @@ impl SessionSource for CodebuddySource {
             }
             if let Some(file) = session_files.first()
                 && let Ok(events) = read_events(file)
-                && let Some(cwd) = events.iter().find_map(|ev| ev.get("cwd").and_then(|c| c.as_str()))
+                && let Some(cwd) = events
+                    .iter()
+                    .find_map(|ev| ev.get("cwd").and_then(|c| c.as_str()))
             {
                 project_path = cwd.to_string();
             }
@@ -337,7 +334,11 @@ impl SessionSource for CodebuddySource {
             let time_active = session_files
                 .iter()
                 .filter_map(|f| fs::metadata(f).and_then(|m| m.modified()).ok())
-                .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).ok())
+                .filter_map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .ok()
+                })
                 .max();
 
             out.push(ProjectMeta {
@@ -381,7 +382,9 @@ impl SessionSource for CodebuddySource {
             let Ok(events) = read_events(file) else {
                 continue;
             };
-            let Some(cwd) = events.iter().find_map(|ev| ev.get("cwd").and_then(|c| c.as_str()))
+            let Some(cwd) = events
+                .iter()
+                .find_map(|ev| ev.get("cwd").and_then(|c| c.as_str()))
             else {
                 continue;
             };
@@ -415,9 +418,7 @@ impl SessionSource for CodebuddySource {
         let filter_paths: Option<Vec<String>> = match &filter.project {
             ProjectSelector::All => None,
             ProjectSelector::Exact { path } => Some(vec![path.clone()]),
-            ProjectSelector::Like { paths, .. } if paths.is_empty() => {
-                return Ok(Vec::new())
-            }
+            ProjectSelector::Like { paths, .. } if paths.is_empty() => return Ok(Vec::new()),
             ProjectSelector::Like { paths, .. } => Some(paths.clone()),
         };
 
@@ -443,14 +444,14 @@ impl SessionSource for CodebuddySource {
 
             if let Some(ref paths) = filter_paths {
                 let matched = if !cwd.is_empty() {
-                    paths.iter().any(|p| cwd == p || cwd.starts_with(&format!("{p}/")))
+                    paths
+                        .iter()
+                        .any(|p| cwd == p || cwd.starts_with(&format!("{p}/")))
                 } else {
                     // 没有 cwd 的早期空壳文件，用文件所在项目目录（编码名）
                     // 与过滤路径比较。
                     paths.iter().any(|p| {
-                        let encoded = p
-                            .trim_start_matches('/')
-                            .replace('/', "-");
+                        let encoded = p.trim_start_matches('/').replace('/', "-");
                         project_id == encoded
                     })
                 };
@@ -459,7 +460,10 @@ impl SessionSource for CodebuddySource {
                 }
             }
 
-            let file_stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let file_stem = file
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
             let Some(meta) = summarize(&events, &project_id, cwd, &file_stem) else {
                 continue;
             };
@@ -468,9 +472,7 @@ impl SessionSource for CodebuddySource {
             let has_messages = events
                 .iter()
                 .any(|ev| ev.get("type").and_then(|t| t.as_str()) == Some("message"));
-            if !has_messages
-                && filter.empty == aa_session_core::EmptySessions::Exclude
-            {
+            if !has_messages && filter.empty == aa_session_core::EmptySessions::Exclude {
                 continue;
             }
 
@@ -765,7 +767,6 @@ fn read_account_config(source: &CodebuddySource) -> Option<serde_json::Value> {
         })
 }
 
-
 /// 应用排序（简化版，不区分 tokens）。
 fn apply_sort(out: &mut [SessionMeta], sort: SortKey) {
     match sort {
@@ -775,15 +776,16 @@ fn apply_sort(out: &mut [SessionMeta], sort: SortKey) {
         SortKey::CreatedDesc => {
             out.sort_by(|a, b| b.time_created.cmp(&a.time_created).then(a.id.cmp(&b.id)))
         }
-        SortKey::Title => {
-            out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()).then(a.id.cmp(&b.id)))
-        }
-        SortKey::Tokens => {
-            out.sort_by(|a, b| {
-                let ta = a.tokens_input + a.tokens_output;
-                let tb = b.tokens_input + b.tokens_output;
-                tb.cmp(&ta).then(a.id.cmp(&b.id))
-            })
-        }
+        SortKey::Title => out.sort_by(|a, b| {
+            a.title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then(a.id.cmp(&b.id))
+        }),
+        SortKey::Tokens => out.sort_by(|a, b| {
+            let ta = a.tokens_input + a.tokens_output;
+            let tb = b.tokens_input + b.tokens_output;
+            tb.cmp(&ta).then(a.id.cmp(&b.id))
+        }),
     }
 }
