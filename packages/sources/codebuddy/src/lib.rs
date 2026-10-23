@@ -20,6 +20,7 @@ use aa_session_core::{
 };
 
 pub mod auth;
+pub mod markdown;
 
 use auth::{mask_phone, mask_token};
 
@@ -552,6 +553,16 @@ impl SessionSource for CodebuddySource {
             "file": file_name,
             "events": events,
         }))
+    }
+
+    /// 把事件流渲染成 Markdown（见 [`markdown`] 模块的归并规则）。
+    fn markdown(&self, session_id: &str) -> Result<String> {
+        let dump = self.dump(session_id)?;
+        let messages = markdown::from_dump(&dump);
+        let meta = self
+            .session(session_id)?
+            .ok_or_else(|| Error::NotFound(session_id.to_string()))?;
+        Ok(aa_session_core::markdown::render(&meta, &messages))
     }
 
     fn auth(&self, show_secrets: bool) -> Result<serde_json::Value> {

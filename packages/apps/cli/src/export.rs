@@ -52,7 +52,42 @@ pub fn assemble(source: &dyn SessionSource, session_id: &str) -> Result<serde_js
     }))
 }
 
-/// 单会话导出：写一个 JSON 文件，或只预演。
+/// 导出格式。
+///
+/// JSON 是**原始记录的无损镜像**（保留原始 JSON 字符串，供 `jq` / `import`
+/// 用）；Markdown 是**版式化的对话**（`## User` / `## Assistant`、工具调用与
+/// 结果并排），给人和编辑器的全文搜索看。两者不是互相替代：想从导出物再导回
+/// 数据库只能用 JSON。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ExportFormat {
+    /// 原始记录的无损 JSON 镜像（默认）。
+    #[default]
+    Json,
+    /// 版式化的 Markdown 对话。
+    Markdown,
+}
+
+impl ExportFormat {
+    /// 文件扩展名，同时也是 `_index.json` 里记录格式的字符串。
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Json => "json",
+            ExportFormat::Markdown => "md",
+        }
+    }
+}
+
+/// 按格式渲染一个会话的导出正文。
+fn render(source: &dyn SessionSource, session_id: &str, format: ExportFormat) -> Result<String> {
+    match format {
+        ExportFormat::Json => Ok(serde_json::to_string_pretty(&assemble(
+            source, session_id,
+        )?)?),
+        ExportFormat::Markdown => Ok(source.markdown(session_id)?),
+    }
+}
+
+/// 单会话导出：写一个 JSON / Markdown 文件，或只预演。
 ///
 /// 与批量模式共用 `-o/--force/--dry-run`，但这里的 `-o` 是**文件路径**。
 pub fn write_single(
@@ -61,8 +96,10 @@ pub fn write_single(
     output: Option<PathBuf>,
     force: bool,
     dry_run: bool,
+    format: ExportFormat,
 ) -> Result<()> {
-    let path = output.unwrap_or_else(|| PathBuf::from(format!("{session_id}.json")));
+    let path =
+        output.unwrap_or_else(|| PathBuf::from(format!("{session_id}.{}", format.extension())));
 
     if path.exists() && !force {
         anyhow::bail!(
@@ -81,8 +118,7 @@ pub fn write_single(
         return Ok(());
     }
 
-    let file = assemble(source, session_id)?;
-    let text = serde_json::to_string_pretty(&file)?;
+    let text = render(source, session_id, format)?;
 
     // 顺手创建父目录：`-o exports/foo/chat.json` 不该因为 exports/foo
     // 不存在而失败，批量模式也是同样的行为。
@@ -111,6 +147,8 @@ pub struct BatchOptions {
     pub force: bool,
     /// 只打印将要写出的文件，不落盘。
     pub dry_run: bool,
+    /// 每个会话文件的格式（决定扩展名与正文）。
+    pub format: ExportFormat,
 }
 
 /// 一次批量导出的结果统计。
@@ -163,7 +201,11 @@ pub fn run_batch(
 
     if opts.dry_run {
         for s in sessions {
-            out(format_args!("  {}  {}", s.id, file_name_for(s)));
+            out(format_args!(
+                "  {}  {}",
+                s.id,
+                file_name_for(s, opts.format)
+            ));
         }
         out(format_args!("\n这是预演。确认无误后去掉 --dry-run 执行。"));
         return Ok(BatchReport::default());
@@ -180,9 +222,9 @@ pub fn run_batch(
         // 一批里 id 不会重复，但文件名是「日期 + 标题 + id 前缀」，理论上
         // 仍可能撞（同一天、同标题、id 前缀相同）。撞了就改用完整 id，
         // **绝不覆盖同批的另一条会话**。
-        let mut file = file_name_for(s);
+        let mut file = file_name_for(s, opts.format);
         if used.contains(&file) {
-            file = file_name_with_full_id(s);
+            file = file_name_with_full_id(s, opts.format);
         }
         used.insert(file.clone());
 
@@ -199,7 +241,7 @@ pub fn run_batch(
             continue;
         }
 
-        match write_one(source, s, &path) {
+        match write_one(source, s, &path, opts.format) {
             Ok(bytes) => {
                 out(format_args!("✓ {}  {}  {}", s.id, human_bytes(bytes), file));
                 report.exported += 1;
@@ -216,8 +258,9 @@ pub fn run_batch(
 
     let index_path = opts.out_dir.join(INDEX_FILE_NAME);
     let index = Index {
-        index_version: 1,
+        index_version: 2,
         app: source.app().to_string(),
+        format: opts.format.extension().to_string(),
         generated_at: now_ms(),
         session_count: entries.len(),
         exported: report.exported,
@@ -249,35 +292,46 @@ pub fn run_batch(
 }
 
 /// 写一个会话的导出文件，返回字节数。
-fn write_one(source: &dyn SessionSource, s: &SessionMeta, path: &Path) -> Result<u64> {
-    let file = assemble(source, &s.id)?;
-    let text = serde_json::to_string_pretty(&file)?;
+fn write_one(
+    source: &dyn SessionSource,
+    s: &SessionMeta,
+    path: &Path,
+    format: ExportFormat,
+) -> Result<u64> {
+    let text = render(source, &s.id, format)?;
     std::fs::write(path, &text).with_context(|| format!("写入 {} 失败", path.display()))?;
     Ok(text.len() as u64)
 }
 
-/// 为一条会话生成可读的文件名：`<创建日期>_<标题 slug>_<id 前缀>.json`。
+/// 为一条会话生成可读的文件名：`<创建日期>_<标题 slug>_<id 前缀>.<ext>`。
 ///
 /// 日期在前，文件按时间自然排序；标题在中间，扫文件名就能认出对话；
 /// id 前缀殿后，保证同名不同会话不会互相覆盖。
-pub fn file_name_for(s: &SessionMeta) -> String {
+pub fn file_name_for(s: &SessionMeta, format: ExportFormat) -> String {
     format!(
-        "{}_{}_{}.json",
+        "{}_{}_{}.{}",
         date_of(s),
         slug_or_untitled(&s.title),
         id_prefix(&s.id, ID_PREFIX),
+        format.extension(),
     )
 }
 
 /// 文件名撞车时的保底方案：用完整 id 取代 12 位前缀。
-fn file_name_with_full_id(s: &SessionMeta) -> String {
+fn file_name_with_full_id(s: &SessionMeta, format: ExportFormat) -> String {
     let id = safe_component(&s.id);
     let id = if id.is_empty() {
         "unknown-id".to_string()
     } else {
         id
     };
-    format!("{}_{}_{}.json", date_of(s), slug_or_untitled(&s.title), id,)
+    format!(
+        "{}_{}_{}.{}",
+        date_of(s),
+        slug_or_untitled(&s.title),
+        id,
+        format.extension(),
+    )
 }
 
 /// 日期前缀：优先用创建时间，缺失时退回更新时间。
@@ -375,8 +429,13 @@ fn now_ms() -> i64 {
 #[derive(serde::Serialize)]
 struct Index {
     /// 索引格式版本，将来字段变动时靠它区分。
+    ///
+    /// v2 起多了 `format` 字段（`json` / `md`）：同一目录里可能同时有
+    /// 两种格式的导出物，索引必须说清自己描述的是哪一次。
     index_version: u32,
     app: String,
+    /// 本次导出物的格式（`json` / `md`）。
+    format: String,
     /// 生成时间（Unix 毫秒）。
     generated_at: i64,
     /// 索引里的条目数（= 写入 + 跳过，不含失败）。
@@ -495,23 +554,29 @@ mod tests {
     fn file_name_is_date_slug_id() {
         // 2026-10-24T12:00:00Z
         let s = session("ses_0123456789abcdef", "修复/导出", 1_792_843_200_000);
-        let name = file_name_for(&s);
+        let name = file_name_for(&s, ExportFormat::Json);
         assert!(name.starts_with("2026-10-24_"), "{name}");
         assert!(name.contains("修复-导出"), "{name}");
         assert!(name.ends_with("_ses_01234567.json"), "{name}");
     }
 
     #[test]
+    fn markdown_export_uses_md_extension() {
+        let s = session("ses_0123456789abcdef", "修复导出", 1_792_843_200_000);
+        assert!(file_name_for(&s, ExportFormat::Markdown).ends_with("_ses_01234567.md"));
+    }
+
+    #[test]
     fn empty_title_falls_back_to_untitled() {
         let s = session("ses_abc", "   ", 1_792_843_200_000);
-        assert!(file_name_for(&s).contains("_untitled_"));
+        assert!(file_name_for(&s, ExportFormat::Json).contains("_untitled_"));
     }
 
     #[test]
     fn missing_timestamps_are_undated_not_1970() {
         // 「上游没记录时间」和「1970 年」是两回事，文件名不该撒谎。
         let s = session("ses_abc", "x", 0);
-        assert!(file_name_for(&s).starts_with("undated_"));
+        assert!(file_name_for(&s, ExportFormat::Json).starts_with("undated_"));
     }
 
     #[test]
@@ -519,9 +584,15 @@ mod tests {
         let a = session("ses_0123456789XXX", "同一天同一标题", 1_792_843_200_000);
         let b = session("ses_0123456789YYY", "同一天同一标题", 1_792_843_200_000);
         // 12 位前缀相同 → 正常命名会撞
-        assert_eq!(file_name_for(&a), file_name_for(&b));
+        assert_eq!(
+            file_name_for(&a, ExportFormat::Json),
+            file_name_for(&b, ExportFormat::Json)
+        );
         // 保底方案用完整 id，因此不再撞
-        assert_ne!(file_name_with_full_id(&a), file_name_with_full_id(&b));
+        assert_ne!(
+            file_name_with_full_id(&a, ExportFormat::Json),
+            file_name_with_full_id(&b, ExportFormat::Json)
+        );
     }
 
     // ---------------------------------------------------------------- 批量落盘
@@ -567,6 +638,13 @@ mod tests {
             Ok(serde_json::json!({ "text": format!("内容 {session_id}") }))
         }
 
+        fn markdown(&self, session_id: &str) -> aa_session_core::Result<String> {
+            if self.fail.contains(&session_id) {
+                return Err(aa_session_core::Error::NotFound(session_id.to_string()));
+            }
+            Ok(format!("## User\n\n内容 {session_id}\n"))
+        }
+
         fn auth(&self, _show_secrets: bool) -> aa_session_core::Result<serde_json::Value> {
             Ok(serde_json::json!({}))
         }
@@ -582,6 +660,7 @@ mod tests {
             out_dir: dir.to_path_buf(),
             force: false,
             dry_run: false,
+            format: ExportFormat::Json,
         }
     }
 
@@ -660,6 +739,47 @@ mod tests {
         .unwrap();
         assert_eq!(forced.exported, 1);
         assert_eq!(forced.skipped, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_batch_writes_md_files_and_records_format() {
+        let dir = temp_out_dir("markdown");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let source = MockSource { fail: vec![] };
+        let sessions = vec![session("ses_md", "Markdown 导出", 1_792_843_200_000)];
+        let report = run_batch(
+            &source,
+            &sessions,
+            &BatchOptions {
+                format: ExportFormat::Markdown,
+                ..opts(&dir)
+            },
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(report.exported, 1);
+
+        // 文件名用 .md，内容是 source 渲染的 Markdown（不是 JSON）
+        let name = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .find(|n| n != INDEX_FILE_NAME)
+            .expect("应写出一个会话文件");
+        assert!(name.ends_with(".md"), "{name}");
+        let text = std::fs::read_to_string(dir.join(&name)).unwrap();
+        assert!(text.starts_with("## User"), "{text}");
+        assert!(!text.starts_with('{'), "不应写成 JSON");
+
+        // 索引仍是 JSON，但必须说明这一批是 md
+        let index: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(INDEX_FILE_NAME)).unwrap())
+                .unwrap();
+        assert_eq!(index["format"], "md");
+        assert_eq!(index["index_version"], 2);
+        assert_eq!(index["entries"][0]["file"], name);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -33,6 +33,7 @@ use aa_session_core::{
 use rusqlite::{Connection, OpenFlags, Row};
 
 pub mod import;
+pub mod markdown;
 
 /// zed 的 threads.db 相对 `$HOME` 的路径。
 pub const DEFAULT_DATA_DIR: &str = ".local/share/zed";
@@ -676,6 +677,16 @@ impl SessionSource for ZedSource {
             },
             "thread_json": thread_json,
         }))
+    }
+
+    /// 把线程渲染成 Markdown（见 [`markdown`] 模块的映射规则）。
+    fn markdown(&self, session_id: &str) -> Result<String> {
+        let dump = self.dump(session_id)?;
+        let messages = markdown::from_dump(&dump);
+        let meta = self.session(session_id)?.ok_or_else(|| {
+            Error::NotFound(format!("thread {session_id} not found in threads.db"))
+        })?;
+        Ok(aa_session_core::markdown::render(&meta, &messages))
     }
 
     fn auth(&self, _show_secrets: bool) -> Result<serde_json::Value> {

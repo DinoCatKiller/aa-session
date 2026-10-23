@@ -29,8 +29,8 @@ aa-session --app opencode sessions   [--project ABS_PATH | --project-like SUB]
                                     [--archived exclude|only|include]
                                     [--sort updated|created|title|tokens] [--limit N]
                                     [--format table|json|toon]
-aa-session --app opencode show   <SESSION_ID>
-aa-session --app opencode export [SESSION_ID] [-o PATH]
+aa-session --app opencode show   <SESSION_ID> [--format json|markdown]
+aa-session --app opencode export [SESSION_ID] [-o PATH] [--format json|markdown]
                                     [--force] [--dry-run] [--all]
                                     [过滤选项同 sessions] [--sort ...] [--limit N]
 ```
@@ -68,7 +68,9 @@ aa-session --app opencode export --project /home/aa/repos/ai_ls/AAgent -o export
   （用 `Option<usize>` 区分「没给」和「给了 0」，不再需要「0 表示全部」这种
   反直觉约定）。底层用 `core::NO_LIMIT`：`usize::MAX` 转成 `i64` 是 `-1`，
   SQLite 的负数 `LIMIT` 正是不限，`Vec::truncate` 也是无操作。
-- 文件名 `<创建日期>_<标题 slug>_<id 前 12 位>.json`：日期在前可按时间自然
+- `--format json|markdown`（默认 `json`）：决定文件扩展名（`.json` / `.md`）
+  与正文格式。Markdown 见下方「导出格式」一节。
+- 文件名 `<创建日期>_<标题 slug>_<id 前 12 位>.<ext>`：日期在前可按时间自然
   排序，标题让人在文件树里认出对话，id 段保证不互相覆盖。标题里的空格 /
   斜杠 / emoji 折叠成 `-`；**id 段单独消毒**，不能靠「数据库里的 id 应该
   没怪字符」——`/` 会写到目录之外。
@@ -222,8 +224,8 @@ comfy-table 要 `0.2`。我们的直接依赖必须写 `"0.2"` 而不是 `"0.2.2
 | -------------------------- | ----------------------------------------------------------- |
 | `just projects [过滤]`     | 列出项目（等价 `aa-session --app opencode projects`）       |
 | `just sessions [过滤]`     | 列出会话                                                    |
-| `just dump <ID> [路径]`    | 导出会话，不给路径时落到 `exports/<ID>.json`                |
-| `just dump-dir <目录子串> [目录]` | 按目录批量导出，默认落到 `exports/<目录子串>/opencode/` |
+| `just dump <ID> [路径] [格式]` | 导出会话，不给路径时落到 `exports/<ID>.<ext>`；格式默认 `json` |
+| `just dump-dir <目录子串> [目录] [格式]` | 按目录批量导出，默认落到 `exports/<目录子串>/opencode[-markdown]/` |
 | `just zed <ID> [路径]`     | 导出后直接用 Zed 打开                                       |
 | `just find <模式>`         | 在 `exports/` 里全文搜索（等价于 Zed 的 cmd+f，但可脚本化） |
 | `just ci`                  | `fmt --check` + `clippy` + `test`，提交前跑这个             |
@@ -287,8 +289,13 @@ apps/cli/          clap 入口
 
 ## 导出格式
 
-单会话导出（`show` / `export <ID>`，以及 `export` 批量模式下的每个文件）是**原始记录的
-无损镜像**，不做归一：
+`show` 与 `export` 都有 `--format json|markdown`，默认 `json`。两种格式不是
+互相替代：**JSON 是给机器和导入用的，Markdown 是给人读的**。
+
+### JSON（默认）：原始记录的无损镜像
+
+单会话导出（`show` / `export <ID>`，以及 `export` 批量模式下的每个 `.json`
+文件）是**原始记录的无损镜像**，不做归一：
 
 ```json
 {
@@ -311,6 +318,57 @@ apps/cli/          clap 入口
   先 `--dry-run` 看清单。
 - `export` 批量模式还会在输出目录里写 `_index.json`：筛选条件快照 + 每个文件的
   id / 标题 / 路径 / token / 字节数。它描述**本次运行的结果**，每次重写，别手改。
+
+### Markdown：版式化的对话
+
+````markdown
+# 修复导出
+
+- app: opencode
+- session: ses_...
+- directory: /home/aa/repos/ide_ls/aa-session
+- agent: build
+- model: gemma4:31b (ollama-cloud)
+- created: 2026-06-07 12:33 UTC
+- updated: 2026-06-07 12:39 UTC
+
+## User
+
+把目标语言改成 vi
+
+## Assistant
+
+<thinking>
+先看配置文件。
+</thinking>
+
+**Tool Use**: read (ID: call_5l2195k5)
+Status: completed
+
+```json
+{ "filePath": "packages/cli/config.json" }
+```
+
+**Tool Result**: read (ID: call_5l2195k5)
+
+<path>...</path>
+1: { ... }
+````
+
+- 版式参照 zed 自己的线程导出（`crates/agent/src/thread.rs` 与
+  `crates/acp_thread/src/acp_thread.rs`）：`## User` / `## Assistant`、
+  `<thinking>`、`**Tool Use** / **Tool Result**`。
+- 工具参数与输出**不截断**，所以单会话仍可能有几十 MB；它适合阅读和全文
+  搜索，不适合当聊天记录转发。
+- 渲染逻辑在 `core::markdown`：各 source 只负责把 `dump()` 解析成统一的
+  `Message`（opencode v2/v1、codebuddy 事件流、zed 的 `thread_json`），
+  `##` 标题、代码围栏、元信息头只写一遍。
+- opencode 的 841 个 v2 会话**同时**残留 v1 的 `message` / `part` 行；
+  渲染时**只读 v2**（`session_message` 非空即视为 v2），否则同一段对话会
+  打印两遍。
+- 批量模式的扩展名随之变成 `.md`；`_index.json` **始终是 JSON**，并带
+  `format` 字段（索引 `index_version: 2`）。同一目录可以同时放 `.json` 和
+  `.md`，但索引只描述**最后一次**运行。
 
 ## 🚫 硬约束：不写 opencode 库
 

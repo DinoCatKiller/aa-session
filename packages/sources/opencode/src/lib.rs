@@ -21,6 +21,7 @@
 //! 以 SQLite `mode=ro` URI 打开，**永不写入**。
 
 pub mod backup;
+pub mod markdown;
 pub mod rename;
 
 use std::path::{Path, PathBuf};
@@ -643,6 +644,19 @@ impl SessionSource for OpencodeSource {
             "message": v1_messages,
             "part": parts,
         }))
+    }
+
+    /// 把会话渲染成 Markdown。
+    ///
+    /// 先 `dump()` 拿到原始记录，再交给 [`markdown::from_dump`] 解析成统一
+    /// 对话模型，最后用 `core::markdown::render` 排版。
+    fn markdown(&self, session_id: &str) -> Result<String> {
+        let dump = self.dump(session_id)?;
+        let messages = markdown::from_dump(&dump);
+        let meta = self
+            .session(session_id)?
+            .ok_or_else(|| Error::NotFound(format!("session {session_id}")))?;
+        Ok(aa_session_core::markdown::render(&meta, &messages))
     }
 
     fn auth(&self, show_secrets: bool) -> Result<serde_json::Value> {

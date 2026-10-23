@@ -9,7 +9,7 @@ mod format;
 mod output;
 mod table;
 
-use export::assemble;
+use export::{ExportFormat, assemble};
 use format::Format;
 use output::{human_bytes, out};
 
@@ -71,8 +71,10 @@ const BEFORE_HELP: &str = "\
 `export` 只有一条命令：给 SESSION_ID 就导一个文件，不给就按筛选条件批量导到
 文件夹（一会话一文件 + `_index.json`）。
 
-导出的 JSON 是原始记录的完整镜像（含工具调用的参数与结果），保留原始字符串，
-可直接被编辑器的搜索命中；单会话可达数十 MB，批量导出前先 `--dry-run` 看清单。
+`--format json`（默认）是原始记录的完整镜像（含工具调用的参数与结果），保留原始
+字符串，可直接被编辑器的搜索命中；`--format markdown` 是版式化的对话
+（`## User` / `## Assistant` + 工具调用与结果），给人读。两者单会话都可能达数十
+MB，批量导出前先 `--dry-run` 看清单。
 批量导出默认跳过已存在的同名文件，可以反复重跑补增量（`--force` 覆盖）。
 
 默认只列出**顶层**且**未归档**的会话。opencode 会把派出的探查任务记成子会话
@@ -209,12 +211,17 @@ enum Command {
         json: bool,
     },
 
-    /// 把一个会话的全部原始数据导出为 JSON 到标准输出。
+    /// 把一个会话的全部原始数据导出到标准输出。
     ///
-    /// 不带 `-o` 时写到 stdout，可直接管道给 `jq` 或重定向到文件。
+    /// 默认输出 JSON（可直接管道给 `jq`）；`--format markdown` 输出
+    /// 版式化的对话（`## User` / `## Assistant`），适合直接看或贴进 issue。
     Show {
         /// 会话 id。
         session_id: String,
+
+        /// 输出格式：`json`（原始记录）/ `markdown`（版式化对话）。
+        #[arg(short = 'f', long, value_enum, default_value_t = ExportFormat::Json)]
+        format: ExportFormat,
     },
 
     /// 导出会话：给 SESSION_ID 导一个文件；不给则按筛选条件批量导出到文件夹。
@@ -226,10 +233,11 @@ enum Command {
     /// `aa-session --app opencode export --directory LocalDub -o exports/LocalDub/opencode`
     ///
     /// 批量模式的产物是给人读的文件树：一会话一文件，文件名形如
-    /// `2026-10-24_修复导出_ses_01234567.json`，目录里附一个 `_index.json`
-    /// （筛选条件快照 + 每个文件的元数据）。默认只导**顶层 / 未归档 /
-    /// 非空壳**会话；已存在的同名文件默认**跳过**（方便反复重跑补增量），
-    /// `--force` 覆盖；单条失败不中断整批。先跑 `--dry-run` 看清单。
+    /// `2026-10-24_修复导出_ses_01234567.json`（`--format markdown` 则为
+    /// `.md`），目录里附一个 `_index.json`（筛选条件快照 + 每个文件的元数据）。
+    /// 默认只导**顶层 / 未归档 / 非空壳**会话；已存在的同名文件默认**跳过**
+    /// （方便反复重跑补增量），`--force` 覆盖；单条失败不中断整批。
+    /// 先跑 `--dry-run` 看清单。
     ///
     /// 批量模式必须至少给一个筛选条件（或用 `--all` 显式导出全部），
     /// 避免一条手滑命令把整个库写进当前目录。
@@ -237,14 +245,24 @@ enum Command {
         /// 会话 id。给了就是单会话导出；不给则进入批量模式。
         session_id: Option<String>,
 
-        /// 输出路径。单会话模式是**文件**（缺省 `./<id>.json`），
+        /// 输出路径。单会话模式是**文件**（缺省 `./<id>.<ext>`），
         /// 批量模式是**目录**（必须显式指定，不存在则创建）。
         #[arg(short, long, value_name = "PATH")]
         output: Option<PathBuf>,
 
+        /// 导出格式：`json`（原始记录的无损镜像，默认）/ `markdown`
+        /// （版式化对话，`## User` / `## Assistant` + 工具调用与结果）。
+        ///
+        /// 批量模式下扩展名随之变成 `.json` / `.md`；`_index.json` 始终是
+        /// JSON（它是清单，不是会话正文）。
+        #[arg(short = 'f', long, value_enum, default_value_t = ExportFormat::Json)]
+        format: ExportFormat,
+
         /// 覆盖已存在的文件：单会话模式是「允许覆盖」，批量模式是
         /// 「覆盖同名文件」（默认跳过已存在的）。
-        #[arg(short, long)]
+        ///
+        /// 没有短选项：`-f` 留给 `--format`，与其他子命令保持一致。
+        #[arg(long)]
         force: bool,
 
         /// 只打印将要写出的路径，不写盘。
@@ -646,14 +664,21 @@ fn main() -> Result<()> {
             output::print_sessions(&sessions, resolve_format(format, json))?;
         }
 
-        Command::Show { session_id } => {
-            let file = assemble(source.as_ref(), &session_id)?;
-            out(format_args!("{}", serde_json::to_string_pretty(&file)?));
+        Command::Show { session_id, format } => {
+            let text = match format {
+                ExportFormat::Json => {
+                    let file = assemble(source.as_ref(), &session_id)?;
+                    serde_json::to_string_pretty(&file)?
+                }
+                ExportFormat::Markdown => source.markdown(&session_id)?,
+            };
+            out(format_args!("{text}"));
         }
 
         Command::Export {
             session_id,
             output,
+            format,
             force,
             dry_run,
             all,
@@ -699,7 +724,7 @@ fn main() -> Result<()> {
                         ignored.join(", ")
                     );
                 }
-                export::write_single(source.as_ref(), &id, output, force, dry_run)?;
+                export::write_single(source.as_ref(), &id, output, force, dry_run, format)?;
             }
 
             // ---- 批量 ----
@@ -756,6 +781,7 @@ fn main() -> Result<()> {
                         out_dir,
                         force,
                         dry_run,
+                        format,
                     },
                     query.describe(),
                 )?;

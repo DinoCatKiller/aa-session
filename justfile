@@ -27,9 +27,9 @@ sessions *args:
 directories *args:
     cargo run -q -p {{ cli_pkg }} -- --app opencode directories {{ args }}
 
-# 导出会话为 JSON：just dump <SESSION_ID> [输出路径]
-# 不给路径时落到 exports/<ID>.json，随后可用 `just find` 搜。
-dump session_id out="":
+# 导出会话：just dump <SESSION_ID> [输出路径] [格式 json|markdown]
+# 不给路径时落到 exports/<ID>.<ext>，随后可用 `just find` 搜。
+dump session_id out="" format="json":
     #!/usr/bin/env bash
     set -euo pipefail
     # 必须先把 just 参数赋给 shell 变量再用 ${out:-}：just 只做文本替换，
@@ -37,20 +37,27 @@ dump session_id out="":
     # 用户传了输出路径也不生效。
     session_id="{{ session_id }}"
     out="{{ out }}"
-    path="${out:-$PWD/exports/${session_id}.json}"
+    format="{{ format }}"
+    ext="json"
+    if [ "$format" = "markdown" ]; then ext="md"; fi
+    path="${out:-$PWD/exports/${session_id}.${ext}}"
     mkdir -p "$(dirname "$path")"
-    cargo run -q -p {{ cli_pkg }} -- --app opencode export {{ quote(session_id) }} -o "$path" --force
+    cargo run -q -p {{ cli_pkg }} -- --app opencode export {{ quote(session_id) }} \
+        -o "$path" --force --format "$format"
 
-# 按目录批量导出：just dump-dir <目录子串> [输出目录]
-# 不给输出目录时落到 exports/<目录子串>/opencode/，文件名带日期 + 标题。
-dump-dir directory out="":
+# 按目录批量导出：just dump-dir <目录子串> [输出目录] [格式 json|markdown]
+# 不给输出目录时落到 exports/<目录子串>/opencode[-markdown]/，文件名带日期 + 标题。
+dump-dir directory out="" format="json":
     #!/usr/bin/env bash
     set -euo pipefail
     directory="{{ directory }}"
     out="{{ out }}"
-    path="${out:-$PWD/exports/${directory}/opencode}"
+    format="{{ format }}"
+    suffix="opencode"
+    if [ "$format" = "markdown" ]; then suffix="opencode-markdown"; fi
+    path="${out:-$PWD/exports/${directory}/${suffix}}"
     cargo run -q -p {{ cli_pkg }} -- --app opencode export \
-        --directory "$directory" -o "$path"
+        --directory "$directory" -o "$path" --format "$format"
 
 # 导出后直接用 Zed 打开（导出物是可直接全文搜索的裸文本 JSON）
 zed session_id out="":
@@ -73,7 +80,7 @@ find pattern:
         echo "先运行：just dump <SESSION_ID>" >&2
         exit 1
     fi
-    rg --no-heading --color=never --line-number --glob '*.json' {{ quote(pattern) }} "$dir"
+    rg --no-heading --color=never --line-number --glob '*.{json,md}' {{ quote(pattern) }} "$dir"
 
 # ---------------------------------------------------------------- 开发
 

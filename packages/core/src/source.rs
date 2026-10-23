@@ -247,6 +247,17 @@ pub trait SessionSource {
     /// 四张表；codebuddy 是整个 JSONL 文件的全部事件。不做任何归一。
     fn dump(&self, session_id: &str) -> Result<serde_json::Value>;
 
+    /// 把该会话渲染成给人读的 Markdown。
+    ///
+    /// 与 [`SessionSource::dump`] 的关系：`dump` 是**无损镜像**（保留原始
+    /// JSON 字符串，供 `jq` / `import` 用），Markdown 是**版式化的对话**。
+    /// 各 source 自己把 `dump()` 解析成 [`crate::markdown::Message`]，再交给
+    /// [`crate::markdown::render`] —— 排版逻辑只写一遍。
+    ///
+    /// 工具参数与输出**保留全文**（不截断），因为导出物仍要能被编辑器全文
+    /// 搜索命中；单会话 Markdown 可能因此达到数十 MB，属于预期。
+    fn markdown(&self, session_id: &str) -> Result<String>;
+
     /// 登录态信息（账号身份 + 凭据有效期）。
     ///
     /// 同样返回 `serde_json::Value` 并由各 app 自己组织字段，理由同

@@ -12,6 +12,7 @@
 //! 「从 app A 的会话 fork 出 app A 的新会话」用的是同一个字段。
 
 pub mod error;
+pub mod markdown;
 pub mod model;
 pub mod source;
 

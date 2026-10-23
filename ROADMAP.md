@@ -17,6 +17,8 @@
 - [x] `show` / `export` 导出原始记录的无损镜像（原始字符串供编辑器搜索）
 - [x] `export` 批量模式（不给 SESSION_ID 即按项目 / 目录筛选 → 一会话一文件 + `_index.json`；
       默认跳过已存在文件、`--dry-run` 预演、单条失败不中断整批）
+- [x] `--format json|markdown` 导出格式（JSON 无损镜像 / Markdown 版式化对话；
+      版式参照 zed 导出，归一化模型在 `core::markdown`，三个 source 各自解析 `dump()`）
 - [x] `rename-project` 项目改名（**唯一写库路径**，默认预检、写前强制备份）
 - [x] justfile 日常命令封装
 - [x] CLI 输出容忍 broken pipe
