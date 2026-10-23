@@ -115,10 +115,14 @@ impl EmptySessions {
     /// 消息意味着它是占位符。
     pub fn sql_filter(self) -> &'static str {
         match self {
-            EmptySessions::Exclude => " AND EXISTS (SELECT 1 FROM session_message m \
-                                       WHERE m.session_id = s.id)",
-            EmptySessions::Only => " AND NOT EXISTS (SELECT 1 FROM session_message m \
-                                   WHERE m.session_id = s.id)",
+            EmptySessions::Exclude => {
+                " AND EXISTS (SELECT 1 FROM session_message m \
+                                       WHERE m.session_id = s.id)"
+            }
+            EmptySessions::Only => {
+                " AND NOT EXISTS (SELECT 1 FROM session_message m \
+                                   WHERE m.session_id = s.id)"
+            }
             EmptySessions::Include => "",
         }
     }
@@ -130,14 +134,26 @@ impl EmptySessions {
     /// schema 并存，空壳判定必须跟着各自的消息表走。
     pub fn sql_filter_v1(self) -> &'static str {
         match self {
-            EmptySessions::Exclude => " AND EXISTS (SELECT 1 FROM message m \
-                                       WHERE m.session_id = s.id)",
-            EmptySessions::Only => " AND NOT EXISTS (SELECT 1 FROM message m \
-                                   WHERE m.session_id = s.id)",
+            EmptySessions::Exclude => {
+                " AND EXISTS (SELECT 1 FROM message m \
+                                       WHERE m.session_id = s.id)"
+            }
+            EmptySessions::Only => {
+                " AND NOT EXISTS (SELECT 1 FROM message m \
+                                   WHERE m.session_id = s.id)"
+            }
             EmptySessions::Include => "",
         }
     }
 }
+
+/// 「不限制条数」的哨兵值。
+///
+/// **不能用 0 代替**：各 source 把 `limit` 直接塞进 SQL 的 `LIMIT ?`
+/// （opencode / zed）或 `Vec::truncate`（codebuddy），`0` 表示「一条都不要」。
+/// `usize::MAX` 转成 `i64` 恰好是 `-1`，而 SQLite 的负数 `LIMIT` 正是「不限」；
+/// `truncate(usize::MAX)` 也是无操作。
+pub const NO_LIMIT: usize = usize::MAX;
 
 /// 会话列表的过滤条件。
 ///
@@ -161,6 +177,8 @@ pub struct SessionFilter {
     /// 空壳会话（0 消息）的纳入方式。
     pub empty: EmptySessions,
     /// 最多返回多少条。
+    ///
+    /// `0` 表示**一条都不要**（不是不限制）；要全部结果传 [`NO_LIMIT`]。
     pub limit: usize,
 }
 
@@ -272,8 +290,7 @@ pub trait SessionImporter {
     /// `export_path` 是本工具 `export` 产出的文件。方法内负责校验
     /// `app` 字段与自身一致（防跨 app 误导入），失败报
     /// [`Error::InvalidArgument`]。
-    fn import(&mut self, export_path: &std::path::Path, apply: bool)
-        -> Result<ImportReport>;
+    fn import(&mut self, export_path: &std::path::Path, apply: bool) -> Result<ImportReport>;
 }
 
 /// 一次导入尝试的报告（写或预检都产出一个）。

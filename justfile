@@ -41,6 +41,17 @@ dump session_id out="":
     mkdir -p "$(dirname "$path")"
     cargo run -q -p {{ cli_pkg }} -- --app opencode export {{ quote(session_id) }} -o "$path" --force
 
+# 批量导出某个目录下的所有会话：just dump-many <目录子串> [输出目录]
+# 不给输出目录时落到 exports/<目录子串>/，文件名带日期 + 标题，可直接用编辑器打开搜索。
+dump-many directory out="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    directory="{{ directory }}"
+    out="{{ out }}"
+    path="${out:-$PWD/exports/${directory}}"
+    cargo run -q -p {{ cli_pkg }} -- --app opencode export-many \
+        --directory "$directory" --out-dir "$path"
+
 # 导出后直接用 Zed 打开（导出物是可直接全文搜索的裸文本 JSON）
 zed session_id out="":
     #!/usr/bin/env bash

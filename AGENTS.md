@@ -29,12 +29,48 @@ aa-session --app opencode sessions   [--project ABS_PATH | --project-like SUB]
                                     [--archived exclude|only|include]
                                     [--sort updated|created|title|tokens] [--limit N]
                                     [--format table|json|toon]
-aa-session --app opencode show   <SESSION_ID> [--with-tool-output] [--with-reasoning] [--max-tool-output N]
-aa-session --app opencode export <SESSION_ID> [-o PATH] [--force] [导出选项同上]
+aa-session --app opencode export-many --out-dir DIR
+                                    [过滤选项同 sessions] [--sort ...] [--limit N]
+                                    [--force] [--dry-run]
+aa-session --app opencode show   <SESSION_ID>
+aa-session --app opencode export <SESSION_ID> [-o PATH] [--force]
 ```
 
 - 表格里**不显示来源列**：`--app` 参数已经说明了是哪个 app。
 - `--format` 默认 `table`；`--json` 是 `--format json` 的简写（保留旧用法）。
+
+### 批量导出：`export-many`（一会话一文件）
+
+核心场景「导出某个目录的会话，然后在编辑器里搜」本来就需要**一批**文件：
+单个文件搜不出跨会话的关联，合并成一个大 JSON 又会让每次命中都落在
+几十 MB 的巨型文件里。
+
+```bash
+aa-session --app opencode export-many --directory LocalDub -o exports/LocalDub
+aa-session --app opencode export-many --project /home/aa/repos/ai_ls/AAgent -o exports/AAgent
+```
+
+- **筛选条件与 `sessions` 完全一致**（`--project` / `--project-like` /
+  `--directory` / `--agent` / `--title` / `--since` + 三个 include 模式），
+  两者共用 `query_sessions()`，不会一边修了边界、另一边忘了。
+- 默认仍是**顶层 + 未归档 + 非空壳**；子 agent 的探查会话要显式
+  `--subagents include` 才会导出。
+- `--limit` 默认 **0 = 不限制**（与 `sessions` 的 `--limit 0` 相反，后者是
+  「一条都不要」）。实现用 `core::NO_LIMIT`：`usize::MAX` 转成 `i64` 是
+  `-1`，SQLite 的负数 `LIMIT` 正是不限，`Vec::truncate` 也是无操作。
+- 文件名 `<创建日期>_<标题 slug>_<id 前 12 位>.json`：日期在前可按时间自然
+  排序，标题让人在文件树里认出对话，id 段保证不互相覆盖。标题里的空格 /
+  斜杠 / emoji 折叠成 `-`；**id 段单独消毒**，不能靠「数据库里的 id 应该
+  没怪字符」——`/` 会写到目录之外。
+- 附一个 `_index.json`：筛选条件快照 + 每条会话的 id / 标题 / 路径 /
+  token / 字节数 / `pre_existing`。它是**本次运行的结果**，每次重写，别手改。
+- 默认**跳过**已存在的同名文件，所以能反复重跑补增量；`--force` 才覆盖。
+  文件名里的日期取自**创建时间**，会话后续更新不改名，刷新内容必须 `--force`。
+- 单条会话失败**不中断整批**，其余照常写入，最后以非零退出码报告失败数。
+- `--dry-run` 只打印清单（文件名 + 目标目录），不创建目录也不写盘。
+
+不合并成单个大文件，是因为：编辑器每次命中都落在具体会话上；增量重跑只写
+新增；每份导出物本身就是单会话导出格式，将来要 `import` 不用再拆。
 
 ### 项目寻址：`--project` 精确，`--project-like` 模糊
 
@@ -171,15 +207,16 @@ comfy-table 要 `0.2`。我们的直接依赖必须写 `"0.2"` 而不是 `"0.2.2
 
 `just`（https://github.com/casey/just）封装了常用命令，`just` 可列出全部配方：
 
-| 配方                      | 用途                                                        |
-| ------------------------- | ----------------------------------------------------------- |
-| `just projects [过滤]`    | 列出项目（等价 `aa-session --app opencode projects`）       |
-| `just sessions [过滤]`    | 列出会话                                                    |
-| `just export <ID> [路径]` | 导出会话，不给路径时落到 `exports/<ID>.json`                |
-| `just zed <ID> [路径]`    | 导出后直接用 Zed 打开                                       |
-| `just find <模式>`        | 在 `exports/` 里全文搜索（等价于 Zed 的 cmd+f，但可脚本化） |
-| `just ci`                 | `fmt --check` + `clippy` + `test`，提交前跑这个             |
-| `just run -- <参数>`      | 透传参数给二进制                                            |
+| 配方                       | 用途                                                        |
+| -------------------------- | ----------------------------------------------------------- |
+| `just projects [过滤]`     | 列出项目（等价 `aa-session --app opencode projects`）       |
+| `just sessions [过滤]`     | 列出会话                                                    |
+| `just dump <ID> [路径]`    | 导出会话，不给路径时落到 `exports/<ID>.json`                |
+| `just dump-many <目录子串> [目录]` | 批量导出该目录下的会话，默认落到 `exports/<目录子串>/` |
+| `just zed <ID> [路径]`     | 导出后直接用 Zed 打开                                       |
+| `just find <模式>`         | 在 `exports/` 里全文搜索（等价于 Zed 的 cmd+f，但可脚本化） |
+| `just ci`                  | `fmt --check` + `clippy` + `test`，提交前跑这个             |
+| `just run -- <参数>`       | 透传参数给二进制                                            |
 
 `exports/` 已 gitignore（单个导出可达数百 MB）。要用别的目录：
 `AA_SESSION_EXPORTS=/path just find <模式>`。
@@ -239,28 +276,30 @@ apps/cli/          clap 入口
 
 ## 导出格式
 
+单会话导出（`show` / `export`，以及 `export-many` 的每个文件）是**原始记录的
+无损镜像**，不做归一：
+
 ```json
 {
-  "format_version": 1,
   "app": "opencode",
-  "session": { "id": "...", "title": "...", "project_path": "...", ... },
-  "skipped_messages": 0,
-  "messages": [
-    { "seq": 0, "id": "...", "role": "user", "time_created": 123,
-      "text": "裸文本正文，供编辑器直接搜索",
-      "blocks": [ { "type": "text", "text": "..." } ] }
-  ]
+  "session_id": "ses_...",
+  "raw_data": {
+    "session": { ... },
+    "session_message": [ ... ],
+    "message": [ ... ],
+    "part": [ ... ]
+  }
 }
 ```
 
-- `text` 是把可读分块拼起来的裸文本 —— **为搜索而存在**。
-- `blocks` 保留结构化信息（含 tool 调用的 id / name / status）。
-- `seq` 是稳定标识，将来 fork 以它为边界。
-- **tool 的 input / output 默认不导出**（单会话可达数百 MB，主要是文件全文和
-  命令输出）；`--with-tool-output` 打开，`--max-tool-output N` 可截断。
-- **reasoning 默认不导出**，`--with-reasoning` 打开。
-
-实测：一个 1217 条消息的会话默认导出 810 KB，加全部 tool 输出后 33 MB。
+- `raw_data` 就是各 source 的 `dump()` 结果：opencode 是四张表原样，codebuddy
+  是 JSONL 事件流，zed 是 `columns` + 解压后的 `thread_json`。
+- 保留原始字符串（含工具调用的参数与输出）——**为编辑器全文搜索而存在**：
+  在 Zed 里搜「音频解码」直接命中原文。
+- 代价是体积：单会话实测可达 33 MB（主要是文件全文和命令输出）。批量导出前
+  先 `--dry-run` 看清单。
+- `export-many` 还会在输出目录里写 `_index.json`：筛选条件快照 + 每个文件的
+  id / 标题 / 路径 / token / 字节数。它描述**本次运行的结果**，每次重写，别手改。
 
 ## 🚫 硬约束：不写 opencode 库
 

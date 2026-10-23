@@ -14,7 +14,9 @@
 - [x] `--archived exclude|only|include`（默认排除归档会话）
 - [x] `directories` 列出**会话运行目录**（与项目归属是两回事，独立视图）
 - [x] `sessions` 同时显示会话目录与项目目录（不一致时才都列）
-- [x] `show` / `export` 导出可读 JSON（裸文本 `text` 字段供编辑器搜索）
+- [x] `show` / `export` 导出原始记录的无损镜像（原始字符串供编辑器搜索）
+- [x] `export-many` 批量导出（按项目 / 目录筛选 → 一会话一文件 + `_index.json`；
+      默认跳过已存在文件、`--dry-run` 预演、单条失败不中断整批）
 - [x] `rename-project` 项目改名（**唯一写库路径**，默认预检、写前强制备份）
 - [x] justfile 日常命令封装
 - [x] CLI 输出容忍 broken pipe
@@ -87,8 +89,9 @@
       转义文本，在 toon 输出里也一样，白白吃掉省下来的 token。应改成
       `Option<Model>` 结构体或 `serde_json::Value`。
 
-- [ ] 导出时 snippet 之外，`--with-tool-output` 的体积没有硬上限
-      （单会话实测可达 33 MB）
+- [ ] 导出物没有体积上限：`export` / `export-many` 都是原始记录全量镜像，
+      单会话实测可达 33 MB。批量导出时 `--dry-run` + `--limit` 是唯一护栏，
+      既没有总量预估也没有确认提示。
 - [ ] `session_v2.path` 字段确认：仅 37 条有值且形态不一致，当前直接忽略；
       需确认是否某个 opencode 版本在用它
 - [ ] opencode 1.19.0 已在本机出现（Zed external agents 拉取），

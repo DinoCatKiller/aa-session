@@ -18,6 +18,6 @@ pub mod source;
 pub use error::{Error, Result};
 pub use model::{DirectoryMeta, ProjectMeta, SessionMeta, UNKNOWN_PROJECT_PATH};
 pub use source::{
-    Archived, EmptySessions, ImportReport, ProjectSelector, SessionFilter, SessionImporter,
-    SessionSource, SortKey, Subagents,
+    Archived, EmptySessions, ImportReport, NO_LIMIT, ProjectSelector, SessionFilter,
+    SessionImporter, SessionSource, SortKey, Subagents,
 };

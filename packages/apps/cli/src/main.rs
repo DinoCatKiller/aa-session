@@ -4,22 +4,24 @@
 //! 检索交给用户在自己喜欢的编辑器里做——先把会话导出成可读 JSON，再用 Zed /
 //! IDE 的搜索。这样我们不必维护索引，也不必猜用户想要什么样的检索。
 
+mod export;
 mod format;
 mod output;
 mod table;
 
+use export::assemble;
 use format::Format;
 use output::{human_bytes, out};
 
 use std::path::{Path, PathBuf};
 
 use aa_session_core::{
-    Archived, EmptySessions, Error, ProjectSelector, SessionFilter, SessionImporter, SessionSource,
-    SortKey, Subagents,
+    Archived, EmptySessions, Error, NO_LIMIT, ProjectSelector, SessionFilter, SessionImporter,
+    SessionMeta, SessionSource, SortKey, Subagents,
 };
+use aa_session_source_codebuddy::CodebuddySource;
 use aa_session_source_opencode::OpencodeSource;
 use aa_session_source_opencode::{backup, rename};
-use aa_session_source_codebuddy::CodebuddySource;
 use aa_session_source_zed::ZedSource;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -61,19 +63,20 @@ const BEFORE_HELP: &str = "\
 
 典型流程
   1. 看看有哪些项目          aa-session --app opencode projects
-  2. 挑一个项目看会话        aa-session --app opencode sessions --project LocalDub
+  2. 挑一个项目看会话        aa-session --app opencode sessions --project-like LocalDub
   3. 导出会话                aa-session --app opencode export <SESSION_ID> -o chat.json
-  4. 在编辑器里全文搜索      zed chat.json        （或 code / vim / 任何工具）
+  4. 批量导出某个目录        aa-session --app opencode export-many --directory LocalDub -o exports/LocalDub
+  5. 在编辑器里全文搜索      zed exports/LocalDub     （目录可直接打开并跨文件搜索）
 
-导出的 JSON 每条消息带一个裸文本 `text` 字段，可直接被编辑器的搜索命中。
-工具调用的 input/output 默认不导出（体积可达数百 MB），需要时加
---with-tool-output。
+导出的 JSON 是原始记录的完整镜像（含工具调用的参数与结果），保留原始字符串，
+可直接被编辑器的搜索命中；单会话可达数十 MB，批量导出前先 `--dry-run` 看清单。
+批量导出默认跳过已存在的同名文件，可以反复重跑补增量（`--force` 覆盖）。
 
 默认只列出**顶层**且**未归档**的会话。opencode 会把派出的探查任务记成子会话
 （本库 891 个会话里 652 个是子会话），它们默认隐藏，需要时用
 --subagents include|only。同理归档会话默认隐藏，用 --archived include|only。
 
-本工具对 opencode 数据库**只读**，不会写入任何内容。
+本工具默认只读；唯一会写库的子命令是 rename-project（默认预检 + 写前备份）。
 ";
 
 #[derive(Debug, Subcommand)]
@@ -225,6 +228,77 @@ enum Command {
         force: bool,
     },
 
+    /// 批量导出：把一组会话写到一个文件夹（一会话一文件 + `_index.json`）。
+    ///
+    /// 筛选条件与 `sessions` 完全一致；默认同样只导出**顶层 / 未归档 /
+    /// 非空壳**的会话。产物是给人读的文件树：文件名形如
+    /// `2026-10-24_修复导出_ses_01234567.json`，编辑器里按文件名就能认出
+    /// 对话，全文检索又能直接命中文件内容。
+    ///
+    /// 已存在的同名文件默认**跳过**（方便反复重跑补增量），`--force` 覆盖。
+    /// 单条会话失败不会中断整批。先跑 `--dry-run` 看清单。
+    ExportMany {
+        /// 输出目录（不存在则创建）。
+        #[arg(short = 'o', long = "out-dir", value_name = "DIR")]
+        out_dir: PathBuf,
+
+        /// 只导出该项目的会话。**只接受绝对路径，全等匹配** `project.worktree`。
+        #[arg(long = "project", value_name = "ABS_PATH")]
+        project: Option<String>,
+
+        /// 按项目路径**子串**模糊过滤（多命中是预期行为）。
+        ///
+        /// 与 `--project` 互斥。
+        #[arg(long = "project-like", value_name = "SUBSTR")]
+        project_like: Option<String>,
+
+        /// 只导出工作目录包含该子串的会话。
+        #[arg(long, value_name = "SUBSTR")]
+        directory: Option<String>,
+
+        /// 只导出这些 agent，可重复（如 build / plan）。
+        #[arg(short, long = "agent", value_name = "NAME")]
+        agents: Vec<String>,
+
+        /// 只导出标题包含该子串的会话（大小写不敏感）。
+        #[arg(short = 't', long = "title", value_name = "SUBSTR")]
+        title: Option<String>,
+
+        /// 只导出最近 N 分钟内更新过的会话。
+        #[arg(long, value_name = "MINUTES")]
+        since: Option<i64>,
+
+        /// 子 agent 会话（opencode 派出的探查任务）的纳入方式。
+        #[arg(long, value_enum, default_value_t = SubArg::Exclude, value_name = "MODE")]
+        subagents: SubArg,
+
+        /// 归档会话的纳入方式。
+        #[arg(long, value_enum, default_value_t = ArchArg::Exclude, value_name = "MODE")]
+        archived: ArchArg,
+
+        /// 空壳会话的纳入方式。
+        #[arg(long, value_enum, default_value_t = EmptyArg::Exclude, value_name = "MODE")]
+        empty: EmptyArg,
+
+        /// 最多导出多少条。**0（默认）= 不限制**。
+        ///
+        /// 注意与 `sessions --limit` 不同：那里 0 就是「一条都不要」。
+        #[arg(short, long, default_value_t = 0)]
+        limit: usize,
+
+        /// 排序键（同时决定导出顺序和 `_index.json` 的顺序）。
+        #[arg(long, value_enum, default_value_t = SortArg::Updated)]
+        sort: SortArg,
+
+        /// 覆盖已存在的同名文件（默认跳过）。
+        #[arg(short, long)]
+        force: bool,
+
+        /// 只打印将要导出的文件，不写盘。
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// 查看该 app 的登录态（账号 + 凭据有效期）。
     ///
     /// token / api key 默认脱敏输出（只留前缀和长度）。`--show-secrets`
@@ -325,15 +399,13 @@ impl AppArg {
                 } else {
                     path.join(aa_session_source_zed::DB_FILE_NAME)
                 };
-                Ok(Box::new(ZedSource::open(&db_file).with_context(
-                    || {
-                        format!(
-                            "无法打开 {} 的数据库（路径 {}）",
-                            self.name(),
-                            db_file.display()
-                        )
-                    },
-                )?))
+                Ok(Box::new(ZedSource::open(&db_file).with_context(|| {
+                    format!(
+                        "无法打开 {} 的数据库（路径 {}）",
+                        self.name(),
+                        db_file.display()
+                    )
+                })?))
             }
         }
     }
@@ -554,54 +626,23 @@ fn main() -> Result<()> {
             format,
             json,
         } => {
-            if project.is_some() && project_like.is_some() {
-                anyhow::bail!(
-                    "--project（精确）与 --project-like（模糊）互斥，请只用一个。\n\
-                     精确匹配要绝对路径；模糊匹配才是子串。"
-                );
-            }
-
-            let selector = match (&project, &project_like) {
-                (Some(p), _) => ProjectSelector::Exact {
-                    path: resolve_exact_project(source.as_ref(), p)?,
-                },
-                (_, Some(pattern)) => ProjectSelector::Like {
-                    pattern: pattern.clone(),
-                    paths: source.project_paths_like(pattern)?,
-                },
-                _ => ProjectSelector::All,
-            };
-
-            if let ProjectSelector::Like { paths, pattern } = &selector
-                && paths.is_empty()
-            {
-                // 空结果必须提示，否则用户会以为是「没有会话」而不是「没有项目」。
-                anyhow::bail!(
-                    "没有路径包含 `{pattern}` 的项目；\
-                     先跑 `aa-session --app opencode projects` 看看有哪些。"
-                );
-            }
-
-            let filter = SessionFilter {
-                project: selector,
+            let query = QueryArgs {
+                project,
+                project_like,
                 directory,
                 agents,
-                title_contains: title,
-                // 「最近 N 分钟」在 SQL 里比较，不把全表拉进内存。
-                updated_after: since.map(minutes_ago_ms),
-                subagents: subagents.into(),
-                archived: archived.into(),
-                empty: empty.into(),
-                limit,
+                title,
+                since,
+                subagents,
+                archived,
+                empty,
+                sort,
             };
-
-            let sessions = source.sessions(&filter, sort.into())?;
+            let sessions = query_sessions(source.as_ref(), &query, limit)?;
             output::print_sessions(&sessions, resolve_format(format, json))?;
         }
 
-        Command::Show {
-            session_id,
-        } => {
+        Command::Show { session_id } => {
             let file = assemble(source.as_ref(), &session_id)?;
             out(format_args!("{}", serde_json::to_string_pretty(&file)?));
         }
@@ -632,6 +673,54 @@ fn main() -> Result<()> {
                 text.len(),
                 path.display()
             ));
+        }
+
+        Command::ExportMany {
+            out_dir,
+            project,
+            project_like,
+            directory,
+            agents,
+            title,
+            since,
+            subagents,
+            archived,
+            empty,
+            limit,
+            sort,
+            force,
+            dry_run,
+        } => {
+            let query = QueryArgs {
+                project,
+                project_like,
+                directory,
+                agents,
+                title,
+                since,
+                subagents,
+                archived,
+                empty,
+                sort,
+            };
+
+            // 批量导出里 `--limit 0` 必须理解为「不限制」：用户来批量导出就是
+            // 要「这个目录下的全部会话」，默认值卡在 0 条毫无意义。
+            // `sessions` 的 0 是字面意义（一条都不要），两处语义不同，
+            // 故用显式的 NO_LIMIT 常量而不是 0。
+            let limit = if limit == 0 { NO_LIMIT } else { limit };
+            let sessions = query_sessions(source.as_ref(), &query, limit)?;
+
+            export::run_batch(
+                source.as_ref(),
+                &sessions,
+                &export::BatchOptions {
+                    out_dir,
+                    force,
+                    dry_run,
+                },
+                query.describe(),
+            )?;
         }
 
         Command::Auth {
@@ -747,18 +836,103 @@ fn minutes_ago_ms(minutes: i64) -> i64 {
     now_ms - minutes * 60 * 1000
 }
 
-/// 导出该会话的**全部原始数据**（无损）。
+/// `sessions` 与 `export-many` 共用的筛选条件。
 ///
-/// 结果包一层 `{app, session_id, raw_data}`,`raw_data` 就是 source 的
-/// `dump()` 原样返回（opencode 是多张表,codebuddy 是 JSONL 事件流）。
-/// 用户的编辑器全文检索直接命中原始字符串,不做任何归一。
-fn assemble(source: &dyn SessionSource, session_id: &str) -> Result<serde_json::Value> {
-    let raw = source.dump(session_id)?;
-    Ok(serde_json::json!({
-        "app": source.app(),
-        "session_id": session_id,
-        "raw_data": raw,
-    }))
+/// 两个子命令的筛选参数完全一致，抽出来是为了让「批量导出哪些会话」和
+/// 「列表里看到哪些会话」在实现层面就是同一段代码 —— 否则两边迟早走偏
+/// （比如一边修了 `--project` 的边界处理，另一边忘了）。
+struct QueryArgs {
+    project: Option<String>,
+    project_like: Option<String>,
+    directory: Option<String>,
+    agents: Vec<String>,
+    title: Option<String>,
+    since: Option<i64>,
+    subagents: SubArg,
+    archived: ArchArg,
+    empty: EmptyArg,
+    sort: SortArg,
+}
+
+impl QueryArgs {
+    /// 筛选条件快照，写进批量导出的 `_index.json`。
+    ///
+    /// 过几天回来能知道「这个目录是怎么筛出来的」，而不是靠回忆。
+    fn describe(&self) -> serde_json::Value {
+        serde_json::json!({
+            "project": self.project,
+            "project_like": self.project_like,
+            "directory": self.directory,
+            "agents": self.agents,
+            "title": self.title,
+            "since_minutes": self.since,
+            "subagents": mode_name(self.subagents),
+            "archived": mode_name(self.archived),
+            "empty": mode_name(self.empty),
+            "sort": mode_name(self.sort),
+        })
+    }
+}
+
+/// `ValueEnum` 变体的命令行名字（kebab-case），用于输出与索引。
+fn mode_name<T: ValueEnum>(value: T) -> String {
+    value
+        .to_possible_value()
+        .map(|p| p.get_name().to_string())
+        .unwrap_or_default()
+}
+
+/// 按筛选条件查会话。
+///
+/// 项目寻址的两条规则（精确 / 模糊互斥、命中为空要报错）集中在这里，
+/// 保证 `sessions` 和 `export-many` 行为一致。
+fn query_sessions(
+    source: &dyn SessionSource,
+    query: &QueryArgs,
+    limit: usize,
+) -> Result<Vec<SessionMeta>> {
+    if query.project.is_some() && query.project_like.is_some() {
+        anyhow::bail!(
+            "--project（精确）与 --project-like（模糊）互斥，请只用一个。\n\
+             精确匹配要绝对路径；模糊匹配才是子串。"
+        );
+    }
+
+    let selector = match (&query.project, &query.project_like) {
+        (Some(p), _) => ProjectSelector::Exact {
+            path: resolve_exact_project(source, p)?,
+        },
+        (_, Some(pattern)) => ProjectSelector::Like {
+            pattern: pattern.clone(),
+            paths: source.project_paths_like(pattern)?,
+        },
+        _ => ProjectSelector::All,
+    };
+
+    if let ProjectSelector::Like { paths, pattern } = &selector
+        && paths.is_empty()
+    {
+        // 空结果必须提示，否则用户会以为是「没有会话」而不是「没有项目」。
+        anyhow::bail!(
+            "没有路径包含 `{pattern}` 的项目；\
+             先跑 `aa-session --app opencode projects` 看看有哪些。"
+        );
+    }
+
+    let filter = SessionFilter {
+        project: selector,
+        directory: query.directory.clone(),
+        agents: query.agents.clone(),
+        title_contains: query.title.clone(),
+        // 「最近 N 分钟」在 SQL 里比较，不把全表拉进内存。
+        updated_after: query.since.map(minutes_ago_ms),
+        subagents: query.subagents.into(),
+        archived: query.archived.into(),
+        empty: query.empty.into(),
+        limit,
+    };
+
+    Ok(source.sessions(&filter, query.sort.into())?)
 }
 
 /// 改名子命令的实现。

@@ -73,6 +73,18 @@ fn fmt_time(ms: i64) -> String {
     )
 }
 
+/// Unix 毫秒 → `YYYY-MM-DD`（批量导出的文件名用）。
+///
+/// 时间为 0 / 负数时返回 `undated`，而不是落成 `1970-01-01` ——
+/// 上游缺时间是「不知道」，不是「1970 年」。
+pub(crate) fn fmt_date(ms: i64) -> String {
+    if ms <= 0 {
+        return "undated".to_string();
+    }
+    // `fmt_time` 的输出是纯 ASCII 的 `YYYY-MM-DD HH:MM`，按字节切前 10 位安全。
+    fmt_time(ms)[..10].to_string()
+}
+
 /// 人类可读的 token 数（万 / 亿）。
 fn human_tokens(n: i64) -> String {
     const WAN: i64 = 10_000;
@@ -247,11 +259,7 @@ const TITLE_W: usize = 40;
 /// 硬套表格要么丢字段要么每列都空着一大半。树形打印对任何 app 的结构都成立，
 /// CLI 因此不含 per-app 的字段知识。
 /// `json` / `toon` 直接序列化整个对象（字段最全，给脚本和 AI 用）。
-pub fn print_auth(
-    info: &serde_json::Value,
-    fmt: Format,
-    show_secrets: bool,
-) -> Result<()> {
+pub fn print_auth(info: &serde_json::Value, fmt: Format, show_secrets: bool) -> Result<()> {
     if let Some(rendered) = fmt.render(info)? {
         out(format_args!("{rendered}"));
         return Ok(());
@@ -261,7 +269,10 @@ pub fn print_auth(
         // 明码凭据上屏，先在屏幕和 stderr 各留一句警告。
         // 用户可能正把 stdout 重定向进文件或管道给 AI，那句提醒更值钱。
         eprintln!("⚠ 正在打印完整凭据（token / api key）。不要把它粘到 issue、日志或聊天里。");
-        eprintln!("⚠ 凭据原文在 {} 里，日常查看不需要 --show-secrets。", credential_dir_hint(info));
+        eprintln!(
+            "⚠ 凭据原文在 {} 里，日常查看不需要 --show-secrets。",
+            credential_dir_hint(info)
+        );
     }
 
     let app = info.get("app").and_then(|a| a.as_str()).unwrap_or("?");
@@ -363,4 +374,3 @@ fn needs_recurse(v: &serde_json::Value, depth: usize) -> bool {
         _ => false,
     }
 }
-
