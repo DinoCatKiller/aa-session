@@ -167,7 +167,11 @@ just find <模式>                  # 在 exports/ 里全文搜索
 just ci                           # fmt + clippy + test，提交前跑这个
 ```
 
-`exports/` 已 gitignore。要换目录：`AA_SESSION_EXPORTS=/path just find <模式>`。
+`exports/` 已 gitignore（单个导出可达数百 MB）。要换目录：
+`AA_SESSION_EXPORTS=/path just find <模式>`。
+
+维护 justfile 时的两处陷阱（just 只做文本替换、插值要先 `quote()` 转义）
+写在 [`AGENTS.md`](AGENTS.md) 的 justfile 一节。
 
 ## 写操作与安全边界
 

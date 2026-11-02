@@ -216,25 +216,12 @@ comfy-table 要 `0.2`。我们的直接依赖必须写 `"0.2"` 而不是 `"0.2.2
 - **`SessionMeta` 没有 `Eq`**：`cost` 是 `f64`，浮点不满足 `Eq`。为了显示真实成本
   放弃了整个类型的 `Eq` 绑定（本项目不需要把它当 `HashSet` key，可接受）。
 
-## 日常操作用 justfile
+## justfile：用法在 README，陷阱在这里
 
-`just`（https://github.com/casey/just）封装了常用命令，`just` 可列出全部配方：
+配方表与 `AA_SESSION_EXPORTS` 这类**用法**写在 README（[`README.md` § justfile](README.md)），
+本节只留维护 justfile 时必须知道的坑——这些是踩出来的，不写下来会再踩一次。
 
-| 配方                       | 用途                                                        |
-| -------------------------- | ----------------------------------------------------------- |
-| `just projects [过滤]`     | 列出项目（等价 `aa-session --app opencode projects`）       |
-| `just sessions [过滤]`     | 列出会话                                                    |
-| `just dump <ID> [路径] [格式]` | 导出会话，不给路径时落到 `exports/<ID>.<ext>`；格式默认 `json` |
-| `just dump-dir <目录子串> [目录] [格式]` | 按目录批量导出，默认落到 `exports/<目录子串>/opencode[-markdown]/` |
-| `just zed <ID> [路径]`     | 导出后直接用 Zed 打开                                       |
-| `just find <模式>`         | 在 `exports/` 里全文搜索（等价于 Zed 的 cmd+f，但可脚本化） |
-| `just ci`                  | `fmt --check` + `clippy` + `test`，提交前跑这个             |
-| `just run -- <参数>`       | 透传参数给二进制                                            |
-
-`exports/` 已 gitignore（单个导出可达数百 MB）。要用别的目录：
-`AA_SESSION_EXPORTS=/path just find <模式>`。
-
-### justfile 的两个坑（都踩过）
+### justfile 的两个坑
 
 1. **just 只做文本替换，不创建同名 shell 变量。** 想用 shell 的默认值展开
    `${out:-...}`，必须先 `out="{{ out }}"` 赋值；直接写 `${out:-...}` 会**永远取
@@ -312,30 +299,14 @@ apps/cli/            clap 入口
 
 ### JSON（默认）：原始记录的无损镜像
 
-单会话导出（`show` / `export <ID>`，以及 `export` 批量模式下的每个 `.json`
-文件）是**原始记录的无损镜像**，不做归一：
-
-```json
-{
-  "app": "opencode",
-  "session_id": "ses_...",
-  "raw_data": {
-    "session": { ... },
-    "session_message": [ ... ],
-    "message": [ ... ],
-    "part": [ ... ]
-  }
-}
-```
+形状（`{app, session_id, raw_data}`）与体积代价见 README；这里只记约束：
 
 - `raw_data` 就是各 source 的 `dump()` 结果：opencode 是四张表原样，codebuddy
-  是 JSONL 事件流，zed 是 `columns` + 解压后的 `thread_json`。
-- 保留原始字符串（含工具调用的参数与输出）——**为编辑器全文搜索而存在**：
-  在 Zed 里搜「音频解码」直接命中原文。
-- 代价是体积：单会话实测可达 33 MB（主要是文件全文和命令输出）。批量导出前
-  先 `--dry-run` 看清单。
-- `export` 批量模式还会在输出目录里写 `_index.json`：筛选条件快照 + 每个文件的
-  id / 标题 / 路径 / token / 字节数。它描述**本次运行的结果**，每次重写，别手改。
+  是 JSONL 事件流，zed 是 `columns` + 解压后的 `thread_json`。**不要为了好看
+  在 dump 层归一**——归一了就搜不到原文。
+- 单会话实测可达 33 MB（主要是文件全文和命令输出）。批量导出前先 `--dry-run`。
+- `export` 批量模式还会写 `_index.json`（筛选条件快照 + 每文件 id / 标题 /
+  路径 / 字节数），描述**本次运行的结果**，每次重写，别手改。
 
 ### Markdown：版式化的对话
 
