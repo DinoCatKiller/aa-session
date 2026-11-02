@@ -249,11 +249,27 @@ comfy-table 要 `0.2`。我们的直接依赖必须写 `"0.2"` 而不是 `"0.2.2
 
 ## 数据源
 
-v1 **只有 opencode**，直读 `~/.local/share/opencode/opencode.db`（约 6 GB）。
+三个 app，各自直读自己的存储，互不共享代码：
+
+| `--app` | 存储 | 形态 |
+| --- | --- | --- |
+| `opencode` | `~/.local/share/opencode/opencode.db`（约 6 GB） | SQLite |
+| `codebuddy` | `~/.codebuddy/projects/<编码路径>/*.jsonl` | 每会话一个 JSONL 事件流 |
+| `zed` | `~/.local/share/zed/threads/threads.db` | SQLite（zstd 压缩的 `thread_json` blob） |
+
+opencode 的读取细则：
 
 - 读 `session_v2` / `session_message` / `project`（v2 schema）。
 - v1 的 `session` / `message` / `part` **不读**——两套都在同一库里，但 v2 才是当前 schema。
 - 以 SQLite `mode=ro` 打开，**永不写入**。
+
+codebuddy 有**自动清除**机制（`cleanupPeriodDays`，默认 30 天，本机已设为 90），
+过期会话连文件一起消失，aa-session 只能看见还没被删的那部分。详见
+[`docs/codebuddy-retention.md`](docs/codebuddy-retention.md)。要长期归档必须导出，
+别指望源目录自己留着。
+
+zed 是唯一实现了**写入**（`SessionImporter` 覆盖导入）的来源；另外两个
+`open_importer()` 返回 `None`。
 
 ### 为什么直读而不是 `opencode serve` HTTP API
 
@@ -266,16 +282,18 @@ opencode 提供 `opencode serve`（`GET /session` 等）。不用它：
 
 ### 关于 `app`
 
-`SessionSource::app()` 标识数据由哪个 agent 应用产生（opencode / claude-code /
-codex）。它**同时是「来源」和「目标」**——将来 fork 时「从 app A 的会话 fork 出
-app A 的新会话」用的是同一个字段。不要叫 `source`，那会被误解成只读导入方向。
+`SessionSource::app()` 标识数据由哪个 agent 应用产生（当前实现：
+`opencode` / `codebuddy` / `zed`）。它**同时是「来源」和「目标」**——将来 fork 时
+「从 app A 的会话 fork 出 app A 的新会话」用的是同一个字段。不要叫 `source`，那会被误解成只读导入方向。
 
 ## 架构
 
 ```
-core/              领域模型 + SessionSource trait（零外部依赖）
-sources/opencode/  opencode 只读实现（rusqlite）+ 导出格式
-apps/cli/          clap 入口
+core/                领域模型 + SessionSource trait（零外部依赖）
+sources/opencode/    直读 opencode.db（rusqlite）
+sources/codebuddy/   直读 ~/.codebuddy/projects/**/*.jsonl
+sources/zed/         直读 threads.db + 覆盖导入（唯一写路径）
+apps/cli/            clap 入口
 ```
 
 依赖方向单向：`core` ← `sources/*` ← `apps/cli`。
@@ -284,8 +302,8 @@ apps/cli/          clap 入口
 库层用 `thiserror`，只有二进制入口用 `anyhow` 堆上下文。这样 GUI 阶段能直接
 复用库而不必传递 `anyhow::Error`。
 
-新增数据源（Claude Code 的 `~/.claude/projects/**/*.jsonl`、Codex 的
-`~/.codex/sessions/**/*.jsonl`）只需再写一个 `SessionSource` 实现直读各自存储。
+新增数据源只需再写一个 `SessionSource` 实现直读各自存储。JSONL 形态
+（codebuddy 这类）已经跑通过一次，照抄 `sources/codebuddy` 最快。
 
 ## 导出格式
 
