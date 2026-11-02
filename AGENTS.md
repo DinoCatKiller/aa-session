@@ -132,12 +132,13 @@ opencode 把主 agent 派出的探查任务记成独立会话（`parent_id` 非�
 
 ## 数据源
 
-三个 app，各自直读自己的存储，互不共享代码：
+四个 app，各自直读自己的存储，互不共享代码：
 
 | `--app` | 存储 | 形态 |
 | --- | --- | --- |
 | `opencode` | `~/.local/share/opencode/opencode.db`（约 6 GB） | SQLite |
 | `codebuddy` | `~/.codebuddy/projects/<编码路径>/*.jsonl` | 每会话一个 JSONL 事件流 |
+| `claude` | `~/.claude/projects/<编码路径>/<uuid>.jsonl` | 每会话一个 JSONL 事件流（同一条消息会拆成多行） |
 | `zed` | `~/.local/share/zed/threads/threads.db` | SQLite（zstd 压缩的 `thread_json` blob） |
 
 opencode 的读取细则：
@@ -151,7 +152,11 @@ codebuddy 有**自动清除**机制（`cleanupPeriodDays`，默认 30 天，本�
 [`docs/codebuddy-retention.md`](docs/codebuddy-retention.md)。要长期归档必须导出，
 别指望源目录自己留着。
 
-zed 是唯一实现了**写入**（`SessionImporter` 覆盖导入）的来源；另外两个
+claude 的 `assistant` 事件**不是一条消息**：同一条 API 消息的每个内容块各占一行，
+靠 `message.id` 相同来标识；`usage` 在这几行上完全重复，统计 token 必须按
+`message.id` 去重（按行累加会翻 N 倍）。元数据统计已处理，Markdown 归并尚未实现。
+
+zed 是唯一实现了**写入**（`SessionImporter` 覆盖导入）的来源；另外三个
 `open_importer()` 返回 `None`。
 
 ### 为什么直读而不是 `opencode serve` HTTP API
@@ -166,7 +171,7 @@ opencode 提供 `opencode serve`（`GET /session` 等）。不用它：
 ### 关于 `app`
 
 `SessionSource::app()` 标识数据由哪个 agent 应用产生（当前实现：
-`opencode` / `codebuddy` / `zed`）。它**同时是「来源」和「目标」**——将来 fork 时
+`opencode` / `codebuddy` / `claude` / `zed`）。它**同时是「来源」和「目标」**——将来 fork 时
 「从 app A 的会话 fork 出 app A 的新会话」用的是同一个字段。不要叫 `source`，那会被误解成只读导入方向。
 
 ## 架构
@@ -175,6 +180,7 @@ opencode 提供 `opencode serve`（`GET /session` 等）。不用它：
 core/                领域模型 + SessionSource trait（零外部依赖）
 sources/opencode/    直读 opencode.db（rusqlite）
 sources/codebuddy/   直读 ~/.codebuddy/projects/**/*.jsonl
+sources/claude/      直读 ~/.claude/projects/**/*.jsonl
 sources/zed/         直读 threads.db + 覆盖导入（唯一写路径）
 apps/cli/            clap 入口
 ```
@@ -208,7 +214,7 @@ ACP `session/fork` 的空白区见 [`.agents/safety.md`](.agents/safety.md)。
 ## 开发
 
 ```bash
-cargo test --workspace                     # 27 个测试
+cargo test --workspace                     # 33 个测试
 cargo clippy --workspace --all-targets     # 0 warning
 cargo build --release
 just ci                                    # fmt + clippy + test，提交前跑这个

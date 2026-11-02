@@ -1,6 +1,6 @@
 # aa-session
 
-列出并导出本地 agent 会话（opencode / codebuddy / zed），导成**可以直接在编辑器里全文搜索**的 JSON 或 Markdown。
+列出并导出本地 agent 会话（opencode / codebuddy / claude / zed），导成**可以直接在编辑器里全文搜索**的 JSON 或 Markdown。
 
 ## 为什么做这个
 
@@ -64,6 +64,7 @@ zed exports/LocalDub/opencode
 | --- | --- | --- | --- |
 | `opencode` | `~/.local/share/opencode/opencode.db`（SQLite，约 6 GB） | ✅ | `rename-project` |
 | `codebuddy` | `~/.codebuddy/projects/<编码路径>/*.jsonl` | ✅ | ❌ |
+| `claude` | `~/.claude/projects/<编码路径>/<uuid>.jsonl` | ✅ | ❌ |
 | `zed` | `~/.local/share/zed/threads/threads.db`（zstd 压缩 blob） | ✅ | `import`（覆盖导入） |
 
 `opencode` 的 `rename-project` 只改「指针」字段（`project.worktree`、`session.directory`），

@@ -19,6 +19,7 @@ use aa_session_core::{
     Archived, EmptySessions, NO_LIMIT, ProjectSelector, SessionFilter, SessionImporter,
     SessionMeta, SessionSource, SortKey, Subagents,
 };
+use aa_session_source_claude::ClaudeSource;
 use aa_session_source_codebuddy::CodebuddySource;
 use aa_session_source_opencode::OpencodeSource;
 use aa_session_source_opencode::{backup, rename};
@@ -351,13 +352,15 @@ enum Command {
 
 /// 要操作的 agent 应用。
 ///
-/// 目前实现了 opencode 和 codebuddy；将来加 Claude Code / Codex 时在这里加变体即可。
+/// 目前实现了 opencode / codebuddy / zed / claude；将来加 Codex 时在这里加变体即可。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum AppArg {
     /// opencode（`~/.local/share/opencode/opencode.db`）。
     Opencode,
     /// codebuddy（`~/.codebuddy/projects/<编码路径>/*.jsonl`）。
     Codebuddy,
+    /// claude（`~/.claude/projects/<编码路径>/*.jsonl`）。
+    Claude,
     /// zed（`~/.local/share/zed/threads/threads.db`）。
     Zed,
 }
@@ -375,6 +378,7 @@ impl AppArg {
                 .join(aa_session_source_opencode::DEFAULT_DATA_DIR)
                 .join(aa_session_source_opencode::DB_FILE_NAME),
             AppArg::Codebuddy => home.join(aa_session_source_codebuddy::DEFAULT_DATA_DIR),
+            AppArg::Claude => home.join(aa_session_source_claude::DEFAULT_DATA_DIR),
             AppArg::Zed => home.join(aa_session_source_zed::DEFAULT_DATA_DIR),
         }
     }
@@ -401,6 +405,20 @@ impl AppArg {
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| self.default_data_path());
                 Ok(Box::new(CodebuddySource::open_dir(&path).with_context(
+                    || {
+                        format!(
+                            "无法打开 {} 的数据目录（路径 {}）",
+                            self.name(),
+                            path.display()
+                        )
+                    },
+                )?))
+            }
+            AppArg::Claude => {
+                let path = db
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.default_data_path());
+                Ok(Box::new(ClaudeSource::open_dir(&path).with_context(
                     || {
                         format!(
                             "无法打开 {} 的数据目录（路径 {}）",
@@ -437,6 +455,7 @@ impl AppArg {
         match self {
             AppArg::Opencode => "opencode",
             AppArg::Codebuddy => "codebuddy",
+            AppArg::Claude => "claude",
             AppArg::Zed => "zed",
         }
     }

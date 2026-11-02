@@ -7,6 +7,7 @@ name = "aa_session_cli"
 version = "0.1.0"
 dependencies = [
  "aa_session_core",
+ "aa_session_source_claude",
  "aa_session_source_codebuddy",
  "aa_session_source_opencode",
  "aa_session_source_zed",
@@ -28,6 +29,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "aa_session_source_claude"
+version = "0.1.0"
+dependencies = [
+ "aa_session_core",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
