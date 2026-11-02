@@ -61,12 +61,25 @@
 
 ## v3 —— 多数据源
 
-- [ ] `SessionSource` 的第二个实现（架构已就位，代码未写）
-  - [ ] Claude Code：`~/.claude/projects/**/*.jsonl`
-  - [ ] Codex：`~/.codex/sessions/**/*.jsonl`
-  - [ ] 评估两者是否也需要「项目 / 目录」双视图（Claude Code 按项目目录分文件，
-        可能天然不需要 `directories`）
-- [ ] `--app` 枚举扩展（`AppArg` 加变体即可）
+- [x] `--app` 枚举扩展（`AppArg` 加变体即可）：opencode / codebuddy / claude / zed
+- [x] Claude Code：`~/.claude/projects/<编码路径>/<uuid>.jsonl`
+  - [x] `projects` / `directories` / `sessions` / `session` / `dump`
+  - [x] 项目路径取事件的 `cwd`（目录名不反推：路径段本身可能含 `-`）
+  - [x] token 按 `message.id` 去重后累加（同一消息被拆成 N 行，usage 完全重复）
+  - [x] 6 个单测（时间解析 / 空壳过滤 / 坏行跳过 / token 去重 / tool_result 不当标题 / dump 无损）
+  - [ ] **`markdown` 归并**（下一阶段，`markdown.rs` 目前返回空列表）
+    - [ ] 同 `message.id` 的连续 `assistant` 行归并为一条消息（实测一个 id 最多占 9 行）
+    - [ ] 只含 `tool_result` 的 `user` 事件不新开 `## User`，回填到对应 `Part::Tool`
+    - [ ] `tool_result.content` 可能是字符串也可能是 block 数组，两种都要处理
+    - [ ] 相邻的两条 assistant 消息（中间无用户消息）不能被并成一条 —— codebuddy 的
+          `assistant_index()` 直接 extend 会犯这个错，claude 必须按 `message.id` 判断
+    - [ ] `attachment` / `api-request*` / `mode` / `file-history-snapshot` 等 13 类
+          运行时状态事件跳过（`dump()` 里仍保留）
+  - [ ] `auth` 完整实现：目前只检查 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`，
+        OAuth 凭据在系统 keychain，未读
+  - [ ] 子 agent 会话（`isSidechain: true`）的识别与 `--subagents` 过滤
+- [ ] Codex：`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+      （本机有 3 个文件，cc-switch 的 `session_log_sync` 里有路径）
 
 ## v4 —— GUI
 
