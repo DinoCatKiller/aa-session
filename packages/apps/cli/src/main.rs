@@ -369,17 +369,28 @@ impl AppArg {
     /// 该 app 的默认数据路径。
     ///
     /// opencode 是数据库文件，codebuddy 是目录（`~/.codebuddy`）。
-    fn default_data_path(self) -> PathBuf {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        match self {
+    ///
+    /// 家目录取不到时**直接报错**，不退回空路径：空路径会拼出
+    /// `.local/share/opencode/opencode.db` 这种相对路径，把「不知道家目录在
+    /// 哪」伪装成「库不存在」，排查成本极高（Windows 上没有 `HOME` 时正是如此）。
+    fn default_data_path(self) -> Result<PathBuf> {
+        let home = aa_session_core::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("无法定位用户家目录（HOME / USERPROFILE 均未设置）"))?;
+        Ok(match self {
             AppArg::Opencode => home
                 .join(aa_session_source_opencode::DEFAULT_DATA_DIR)
                 .join(aa_session_source_opencode::DB_FILE_NAME),
             AppArg::Codebuddy => home.join(aa_session_source_codebuddy::DEFAULT_DATA_DIR),
             AppArg::Claude => home.join(aa_session_source_claude::DEFAULT_DATA_DIR),
             AppArg::Zed => home.join(aa_session_source_zed::DEFAULT_DATA_DIR),
+        })
+    }
+
+    /// `--db` 有值就用它，否则回落到该 app 的默认路径。
+    fn resolve_path(self, db: Option<&Path>) -> Result<PathBuf> {
+        match db {
+            Some(path) => Ok(path.to_path_buf()),
+            None => self.default_data_path(),
         }
     }
 
@@ -387,9 +398,7 @@ impl AppArg {
     fn open(self, db: Option<&std::path::Path>) -> Result<Box<dyn SessionSource>> {
         match self {
             AppArg::Opencode => {
-                let path = db
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| self.default_data_path());
+                let path = self.resolve_path(db)?;
                 Ok(Box::new(OpencodeSource::open(&path).with_context(
                     || {
                         format!(
@@ -401,9 +410,7 @@ impl AppArg {
                 )?))
             }
             AppArg::Codebuddy => {
-                let path = db
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| self.default_data_path());
+                let path = self.resolve_path(db)?;
                 Ok(Box::new(CodebuddySource::open_dir(&path).with_context(
                     || {
                         format!(
@@ -415,9 +422,7 @@ impl AppArg {
                 )?))
             }
             AppArg::Claude => {
-                let path = db
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| self.default_data_path());
+                let path = self.resolve_path(db)?;
                 Ok(Box::new(ClaudeSource::open_dir(&path).with_context(
                     || {
                         format!(
@@ -431,9 +436,7 @@ impl AppArg {
             AppArg::Zed => {
                 // `--db` 可给 zed 数据目录（`~/.local/share/zed`，内部拼
                 // `threads/threads.db`）或直接给 .db 文件路径。
-                let path = db
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| self.default_data_path());
+                let path = self.resolve_path(db)?;
                 let db_file = if path.is_file() {
                     path.clone()
                 } else {
@@ -470,9 +473,7 @@ impl AppArg {
             AppArg::Zed => {
                 // `--db` 可给 zed 数据目录（`~/.local/share/zed`，内部拼
                 // `threads/threads.db`）或直接给 .db 文件路径。
-                let path = db
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| self.default_data_path());
+                let path = self.resolve_path(db).ok()?;
                 let db_file = if path.is_file() {
                     path
                 } else {
@@ -1053,9 +1054,10 @@ fn run_rename_project(
 
     // 跟随 `--db`：用户显式给了路径就是想操作那个库，而且这样才能在副本上
     // 做写入演练。默认值仍是 app 的标准位置。
-    let db_path = db_override
-        .cloned()
-        .unwrap_or_else(|| app.default_data_path());
+    let db_path = match db_override {
+        Some(path) => path.clone(),
+        None => app.default_data_path()?,
+    };
 
     // 预检用只读连接。
     let ro = OpencodeSource::open(&db_path)?;
