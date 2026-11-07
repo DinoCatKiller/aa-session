@@ -143,8 +143,12 @@ opencode 把主 agent 派出的探查任务记成独立会话（`parent_id` 非�
 
 opencode 的读取细则：
 
-- 读 `session_v2` / `session_message` / `project`（v2 schema）。
-- v1 的 `session` / `message` / `part` **不读**——两套都在同一库里，但 v2 才是当前 schema。
+- 打开时探测 `session_v2` 是否存在，决定整库走哪套 schema：
+  - 有 → 以 v2（`session_v2` / `session_message`）为准，v1 里未被迁走的旧会话用
+    `NOT IN (SELECT id FROM session_v2)` 补进结果；
+  - 没有（老版本、以及 Windows 构建）→ 只读 v1（`session` / `message` / `part`），
+    **任何一句 SQL 都不能提 `session_v2`**，否则直接报 `no such table`。
+- v1 的 `project` 表没有 `time_active` 列，用 `time_updated` 替代。
 - 以 SQLite `mode=ro` 打开，**永不写入**。
 
 codebuddy 有**自动清除**机制（`cleanupPeriodDays`，默认 30 天，本机已设为 90），
