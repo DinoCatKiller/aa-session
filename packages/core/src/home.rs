@@ -53,6 +53,31 @@ pub fn sqlite_file_uri(path: &Path, read_only: bool) -> String {
     }
 }
 
+/// Windows 长路径前缀。
+///
+/// Win32 的 `CreateFileW` / `FindFirstFileW` 在不加 `\\?\` 前缀时受 `MAX_PATH`
+/// （260 字符）限制。CodeBuddy IDE 的消息文件路径会超过这个长度（窗口 uuid +
+/// 工作区引用 + 会话 id + 消息 id 层层嵌套），不加前缀会直接报「找不到文件」。
+///
+/// - 已经带 `\\?\` 的路径不重复添加；
+/// - 只处理绝对路径（verbatim 前缀要求路径是绝对的）；
+/// - 前缀路径里**只能有反斜杠**，正斜杠要换掉；
+/// - 非 Windows 原样返回，Unix 没有这个限制。
+pub fn long_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if text.starts_with(r"\\?\") || text.len() <= 260 || !path.is_absolute() {
+            return path.to_path_buf();
+        }
+        PathBuf::from(format!(r"\\?\{}", text.replace('/', "\\")))
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +95,34 @@ mod tests {
             "URI 里不应出现 verbatim 前缀：{uri}"
         );
         assert!(uri.starts_with("file:"), "{uri}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_path_adds_verbatim_prefix_only_when_needed() {
+        let short = Path::new(r"C:\Users\aa\data");
+        assert_eq!(long_path(short), short);
+
+        let long = format!(r"C:\Users\aa\{}\file.json", "x".repeat(300));
+        let prefixed = long_path(Path::new(&long));
+        assert!(
+            prefixed.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            prefixed.display()
+        );
+
+        // 已经带前缀的不重复添加
+        let already = Path::new(r"\\?\C:\already\long");
+        assert_eq!(long_path(already), already);
+    }
+
+    #[test]
+    fn long_path_is_identity_on_unix() {
+        #[cfg(not(windows))]
+        {
+            let p = Path::new("/home/aa/data/session.json");
+            assert_eq!(long_path(p), p);
+        }
     }
 
     #[test]

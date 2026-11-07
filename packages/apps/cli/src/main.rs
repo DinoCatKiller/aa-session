@@ -21,6 +21,7 @@ use aa_session_core::{
 };
 use aa_session_source_claude::ClaudeSource;
 use aa_session_source_codebuddy::CodebuddySource;
+use aa_session_source_codebuddy_ide::CodebuddyIdeSource;
 use aa_session_source_opencode::OpencodeSource;
 use aa_session_source_opencode::{backup, rename};
 use aa_session_source_zed::ZedSource;
@@ -352,13 +353,15 @@ enum Command {
 
 /// 要操作的 agent 应用。
 ///
-/// 目前实现了 opencode / codebuddy / zed / claude；将来加 Codex 时在这里加变体即可。
+/// 目前实现了 opencode / codebuddy / codebuddy-ide / zed / claude；将来加 Codex 时在这里加变体即可。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum AppArg {
     /// opencode（`~/.local/share/opencode/opencode.db`）。
     Opencode,
-    /// codebuddy（`~/.codebuddy/projects/<编码路径>/*.jsonl`）。
+    /// codebuddy CLI（`~/.codebuddy/projects/<编码路径>/*.jsonl`）。
     Codebuddy,
+    /// codebuddy IDE（`%LOCALAPPDATA%\CodeBuddyExtension\Data`，只读）。
+    CodebuddyIde,
     /// claude（`~/.claude/projects/<编码路径>/*.jsonl`）。
     Claude,
     /// zed（`~/.local/share/zed/threads/threads.db`）。
@@ -381,6 +384,10 @@ impl AppArg {
                 .join(aa_session_source_opencode::DEFAULT_DATA_DIR)
                 .join(aa_session_source_opencode::DB_FILE_NAME),
             AppArg::Codebuddy => home.join(aa_session_source_codebuddy::DEFAULT_DATA_DIR),
+            AppArg::CodebuddyIde => aa_session_source_codebuddy_ide::default_data_root()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("无法定位 CodeBuddy IDE 数据目录（LOCALAPPDATA 未设置）")
+                })?,
             AppArg::Claude => home.join(aa_session_source_claude::DEFAULT_DATA_DIR),
             AppArg::Zed => home.join(aa_session_source_zed::DEFAULT_DATA_DIR),
         })
@@ -412,6 +419,18 @@ impl AppArg {
             AppArg::Codebuddy => {
                 let path = self.resolve_path(db)?;
                 Ok(Box::new(CodebuddySource::open_dir(&path).with_context(
+                    || {
+                        format!(
+                            "无法打开 {} 的数据目录（路径 {}）",
+                            self.name(),
+                            path.display()
+                        )
+                    },
+                )?))
+            }
+            AppArg::CodebuddyIde => {
+                let path = self.resolve_path(db)?;
+                Ok(Box::new(CodebuddyIdeSource::open_dir(&path).with_context(
                     || {
                         format!(
                             "无法打开 {} 的数据目录（路径 {}）",
@@ -458,6 +477,7 @@ impl AppArg {
         match self {
             AppArg::Opencode => "opencode",
             AppArg::Codebuddy => "codebuddy",
+            AppArg::CodebuddyIde => "codebuddy-ide",
             AppArg::Claude => "claude",
             AppArg::Zed => "zed",
         }

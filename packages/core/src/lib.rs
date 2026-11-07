@@ -18,7 +18,7 @@ pub mod model;
 pub mod source;
 
 pub use error::{Error, Result};
-pub use home::{home_dir, sqlite_file_uri};
+pub use home::{home_dir, long_path, sqlite_file_uri};
 pub use model::{DirectoryMeta, ProjectMeta, SessionMeta, UNKNOWN_PROJECT_PATH};
 pub use source::{
     Archived, EmptySessions, ImportReport, NO_LIMIT, ProjectSelector, SessionFilter,
