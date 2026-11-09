@@ -69,7 +69,7 @@ aa-session --app opencode export ses_xxx -o chat.json
 
 # 批量 → -o 是目录（不存在则创建）
 aa-session --app opencode export --directory LocalDub -o exports/LocalDub/opencode
-aa-session --app opencode export --project /home/aa/repos/ai_ls/AAgent -o exports/AAgent/opencode
+aa-session --app opencode export --project /home/aa/repos/ai_ls/aa-zed -o exports/aa-zed/opencode
 ```
 
 单会话模式下给筛选参数会**直接报错**（`--title` 之类在单会话里没有意义，
