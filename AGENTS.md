@@ -69,7 +69,7 @@ aa-session --app opencode export ses_xxx -o chat.json
 
 # 批量 → -o 是目录（不存在则创建）
 aa-session --app opencode export --directory LocalDub -o exports/LocalDub/opencode
-aa-session --app opencode export --project /home/aa/repos/ai_ls/AAgent -o exports/AAgent/opencode
+aa-session --app opencode export --project /home/aa/repos/ai_ls/aa-zed -o exports/aa-zed/opencode
 ```
 
 单会话模式下给筛选参数会**直接报错**（`--title` 之类在单会话里没有意义，
@@ -145,12 +145,26 @@ opencode 把主 agent 派出的探查任务记成独立会话（`parent_id` 非�
 opencode 的读取细则：
 
 - 打开时探测 `session_v2` 是否存在，决定整库走哪套 schema：
-  - 有 → 以 v2（`session_v2` / `session_message`）为准，v1 里未被迁走的旧会话用
-    `NOT IN (SELECT id FROM session_v2)` 补进结果；
+  - 有 → **会话元数据列表是 v1 + v2 合并读**：`sessions()` / `session()` /
+    `projects()` 都从 `session_v2`（+ `session_message` / `project`）和 v1 的
+    `session` / `message` / `part` 两张表 `UNION ALL`，v1 分支用
+    `s.id NOT IN (SELECT id FROM session_v2)` 去重（同 id 以 v2 为准）。见
+    `packages/sources/opencode/src/lib.rs` 的 `SESSION_FROM_PROJECT_V1` 与 `sessions()`；
   - 没有（老版本、以及 Windows 构建）→ 只读 v1（`session` / `message` / `part`），
     **任何一句 SQL 都不能提 `session_v2`**，否则直接报 `no such table`。
-- v1 的 `project` 表没有 `time_active` 列，用 `time_updated` 替代。
+- dump / Markdown 渲染层相反：同一会话两表都有残留行时**只读 v2**
+  （`session_message` 非空即视为 v2），否则对话会打印两遍。见
+  [`.agents/export-format.md`](.agents/export-format.md)。
+- v1 的 `project` 表没有 `time_active` 列（实测本机就是如此），用 `time_updated`
+  作为最近活跃时间的等价替代。
 - 以 SQLite `mode=ro` 打开，**永不写入**。
+
+> 这是 **v2 刚发布约一个月（2026-10 前后）的过渡期状态**，不是长期设计。
+> opencode 的官方 V1→V2 迁移（`packages/core/src/database/v1-migration.bun.ts`）
+> 在启动时自动跑，跑完把 KV `migration.v1-v2` 标成 `completed`；但迁移完成后
+> 若又用旧版 opencode 写过会话，新版不会重扫 v1，那些会话就只留在 v1 表里
+> （本机 2026-11-10 实测：全库 23 个 v1_only，重置 KV 状态并重启服务后归零）。
+> 等 v1 表彻底不再产生新数据，这里的合并读取就可以删掉，只留 v2。
 
 codebuddy 有**自动清除**机制（`cleanupPeriodDays`，默认 30 天，本机已设为 90），
 过期会话连文件一起消失，aa-session 只能看见还没被删的那部分。详见
@@ -208,7 +222,8 @@ apps/cli/            clap 入口
 ## 导出格式
 
 JSON 是**原始记录的无损镜像**（给编辑器和 `import`），Markdown 是**版式化对话**
-（给人读）。dump 层不得归一、v1/v2 双写只读 v2、`_index.json` 每次重写等硬性
+（给人读）。dump 层不得归一、v1/v2 双写时只读 v2（仅指单会话正文渲染，
+列表层仍是 v1+v2 合并，见上节）、`_index.json` 每次重写等硬性
 约束见 [`.agents/export-format.md`](.agents/export-format.md)。
 
 ## 写操作与安全边界

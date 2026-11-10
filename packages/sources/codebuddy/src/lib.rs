@@ -5,7 +5,7 @@
 //!
 //! # 路径编码规则
 //!
-//! `/home/aa/repos/ai_ls/AAgent` → 目录名 `home-aa-repos-ai_ls-AAgent`
+//! `/home/aa/repos/ai_ls/aa-zed` → 目录名 `home-aa-repos-ai_ls-aa-zed`
 //! （把 `/` 换成 `-`，去掉开头的 `/`）。反推时直接 `"/" + name.split("-")`，
 //! 但路径段本身可能含 `-`（如 `ai_ls`），所以用 `projects` 目录枚举 +
 //! 反向查找，而不是机械地按 `-` 拆分。
